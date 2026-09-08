@@ -3,25 +3,65 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Техника для жизни</title>
+<title>ИИ-менеджер WB</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600;700&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1" integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" crossorigin="anonymous"></script>
 <style>
 :root {
-  --bg: #eef2f2;
+  --bg: #f4f7f1;
   --surface: #ffffff;
-  --surface-2: #e4ebea;
-  --border: #dbe3e2;
-  --text: #142523;
-  --text-secondary: #5c6d6a;
-  --accent: #0e7d6a;
-  --accent-soft: rgba(14,125,106,0.10);
+  --surface-2: #eef3ea;
+  --border: #dfe8da;
+  --text: #12190f;
+  --text-secondary: #5c6c57;
+  --accent: #6fa60f;
+  --accent-dim: rgba(111,166,15,0.10);
+  --accent-text-on: #0c1408;
   --positive: #1c8a4e;
   --negative: #c0392f;
+  --warn-bg: #fdf2df;
+  --warn-text: #7a5510;
+  --scrim: rgba(10,16,10,0.5);
   --font: "IBM Plex Sans", -apple-system, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0a100c;
+    --surface: #121a12;
+    --surface-2: #1a241a;
+    --border: #263323;
+    --text: #eef7ea;
+    --text-secondary: #93a68f;
+    --accent: #c6ff3d;
+    --accent-dim: rgba(198,255,61,0.12);
+    --accent-text-on: #0c1408;
+    --positive: #5fe37a;
+    --negative: #ff6b5c;
+    --warn-bg: rgba(255,181,71,0.12);
+    --warn-text: #ffb547;
+    --scrim: rgba(0,0,0,0.6);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0a100c;
+  --surface: #121a12;
+  --surface-2: #1a241a;
+  --border: #263323;
+  --text: #eef7ea;
+  --text-secondary: #93a68f;
+  --accent: #c6ff3d;
+  --accent-dim: rgba(198,255,61,0.12);
+  --accent-text-on: #0c1408;
+  --positive: #5fe37a;
+  --negative: #ff6b5c;
+  --warn-bg: rgba(255,181,71,0.12);
+  --warn-text: #ffb547;
+  --scrim: rgba(0,0,0,0.6);
+}
+
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; }
 body {
@@ -29,149 +69,179 @@ body {
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
-  padding-bottom: calc(64px + env(safe-area-inset-bottom));
 }
-header {
-  padding: 16px 16px 12px;
-  position: sticky; top: 0; z-index: 5;
+
+/* ---- Top bar ---- */
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px;
   background: var(--bg);
+  border-bottom: 1px solid var(--border);
 }
-header .eyebrow { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--text-secondary); font-weight: 600; margin-bottom: 3px; }
-header h1 { font-size: 18px; font-weight: 700; }
-header .updated { font-size: 11.5px; color: var(--text-secondary); font-family: var(--font-mono); margin-top: 4px; }
-
-main { padding: 0 16px 16px; display: flex; flex-direction: column; gap: 12px; }
-
-.hero-card {
-  background: linear-gradient(135deg, var(--accent), #0a5f51);
-  color: #eefaf6;
-  border-radius: 16px;
-  padding: 18px 18px;
-  display: flex; flex-direction: column; gap: 4px;
+.icon-btn {
+  width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; cursor: pointer; flex: none;
 }
-.hero-label { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; opacity: .85; font-weight: 600; }
-.hero-value { font-family: var(--font-mono); font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.hero-sub { font-size: 12.5px; opacity: .9; }
-.hero-row { display: flex; gap: 16px; margin-top: 10px; }
-.hero-metric { flex: 1; }
-.hero-metric .k { font-size: 10.5px; opacity: .8; text-transform: uppercase; letter-spacing: .05em; }
-.hero-metric .v { font-family: var(--font-mono); font-size: 15px; font-weight: 600; margin-top: 2px; }
+.topbar .title-block { flex: 1; min-width: 0; }
+.topbar .eyebrow { font-size: 10px; text-transform: uppercase; letter-spacing: .1em; color: var(--text-secondary); font-weight: 600; }
+.topbar h1 { font-size: 16px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--positive); flex: none; box-shadow: 0 0 8px var(--positive); }
+
+/* ---- Drawer nav ---- */
+.scrim {
+  position: fixed; inset: 0; background: var(--scrim); z-index: 29;
+  opacity: 0; pointer-events: none; transition: opacity .2s ease;
+}
+.scrim.open { opacity: 1; pointer-events: auto; }
+.drawer {
+  position: fixed; top: 0; left: 0; bottom: 0; width: 250px; z-index: 30;
+  background: var(--surface); border-right: 1px solid var(--border);
+  transform: translateX(-100%); transition: transform .25s ease;
+  display: flex; flex-direction: column; padding: 18px 14px;
+}
+.drawer.open { transform: translateX(0); }
+.drawer .brand { display: flex; align-items: center; gap: 10px; padding: 6px 8px 20px; }
+.drawer .brand-mark {
+  width: 32px; height: 32px; border-radius: 9px; background: var(--accent-dim);
+  color: var(--accent); display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-family: var(--font-mono); font-size: 14px;
+}
+.drawer .brand-name { font-weight: 700; font-size: 13.5px; line-height: 1.25; }
+.drawer .brand-sub { font-size: 10.5px; color: var(--text-secondary); }
+.drawer nav { display: flex; flex-direction: column; gap: 2px; }
+.drawer nav button {
+  display: flex; align-items: center; gap: 11px; text-align: left;
+  padding: 10px 12px; border-radius: 10px; border: none; background: none;
+  color: var(--text-secondary); font-family: var(--font); font-size: 13.5px; font-weight: 500;
+  cursor: pointer;
+}
+.drawer nav button .ic { font-size: 16px; width: 20px; text-align: center; }
+.drawer nav button.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+.drawer .drawer-footer { margin-top: auto; font-size: 11px; color: var(--text-secondary); padding: 10px 12px; }
+
+/* ---- Main ---- */
+main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-width: 720px; margin: 0 auto; }
+
+.period-row { display: flex; justify-content: space-between; align-items: baseline; }
+.period-row .period { font-size: 12px; color: var(--text-secondary); }
+.period-row .updated { font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono); }
 
 .kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .kpi-card {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-  padding: 12px 14px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+  padding: 13px 14px;
 }
 .kpi-card .k { font-size: 10.5px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
-.kpi-card .v { font-family: var(--font-mono); font-size: 17px; font-weight: 600; margin-top: 5px; font-variant-numeric: tabular-nums; }
-.kpi-card .v.neg { color: var(--negative); }
-.kpi-card .v.pos { color: var(--positive); }
+.kpi-card .v { font-family: var(--font-mono); font-size: 19px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.delta { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; margin-top: 6px; font-family: var(--font-mono); }
+.delta.up { color: var(--positive); }
+.delta.down { color: var(--negative); }
+.delta.flat { color: var(--text-secondary); }
 
-.section-title { font-size: 13px; font-weight: 700; margin-top: 4px; display: flex; justify-content: space-between; align-items: center; }
-.section-title .hint { font-size: 11px; color: var(--text-secondary); font-weight: 500; }
-
-.product-list { display: flex; flex-direction: column; gap: 8px; }
-.product-card {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
-  padding: 12px 14px;
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+  padding: 16px 16px;
 }
-.product-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.product-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.product-margin { font-family: var(--font-mono); font-size: 13px; font-weight: 600; flex: none; }
-.product-margin.neg { color: var(--negative); }
-.product-margin.pos { color: var(--positive); }
-.product-bar-track { height: 5px; background: var(--surface-2); border-radius: 3px; margin: 8px 0 8px; overflow: hidden; }
+.card h3 { font-size: 12.5px; font-weight: 600; margin-bottom: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
+.card canvas { max-height: 200px; }
+
+.structure-row { display: flex; flex-direction: column; gap: 10px; }
+.structure-item .top-line { display: flex; justify-content: space-between; font-size: 12.5px; margin-bottom: 5px; }
+.structure-item .name { display: flex; align-items: center; gap: 7px; color: var(--text); }
+.structure-item .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.structure-item .amount { font-family: var(--font-mono); color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.structure-track { height: 6px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+.structure-fill { height: 100%; }
+
+.product-list { display: flex; flex-direction: column; gap: 10px; }
+.product-card .product-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; min-width: 0; }
+.product-name-wrap { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.product-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.no-cost-badge { flex: none; }
+.product-profit { font-family: var(--font-mono); font-size: 13px; font-weight: 700; flex: none; }
+.product-profit.neg { color: var(--negative); }
+.product-bar-track { height: 5px; background: var(--surface-2); border-radius: 3px; margin-bottom: 6px; overflow: hidden; }
 .product-bar-fill { height: 100%; border-radius: 3px; background: var(--accent); }
 .product-bar-fill.neg { background: var(--negative); }
-.product-meta { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--text-secondary); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
-.no-cost-badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-family: var(--font); margin-left: 6px; }
+.product-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.no-cost-badge { display: inline-block; font-size: 9.5px; padding: 1px 6px; border-radius: 8px; background: var(--warn-bg); color: var(--warn-text); font-family: var(--font); margin-left: 6px; }
+
+.status-list { display: flex; flex-direction: column; gap: 11px; }
+.status-item { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; }
+.status-item .left { display: flex; align-items: center; gap: 9px; color: var(--text); }
+.status-item .dot { width: 7px; height: 7px; border-radius: 50%; }
+.status-item .dot.ok { background: var(--positive); box-shadow: 0 0 6px var(--positive); }
+.status-item .dot.warn { background: var(--warn-text); box-shadow: 0 0 6px var(--warn-text); }
+.status-item .val { font-family: var(--font-mono); font-weight: 600; }
 
 .notice {
-  background: var(--surface-2); border-radius: 10px; padding: 10px 12px; font-size: 12px; color: var(--text-secondary);
-  display: flex; gap: 8px; align-items: flex-start; line-height: 1.4;
+  background: var(--warn-bg); border-radius: 10px; padding: 10px 12px; font-size: 12px; color: var(--warn-text);
+  line-height: 1.4;
 }
 
-.state-msg { text-align: center; padding: 40px 20px; color: var(--text-secondary); font-size: 13px; }
-
-nav.tabbar {
-  position: fixed; bottom: 0; left: 0; right: 0;
-  background: var(--surface);
-  border-top: 1px solid var(--border);
-  display: flex;
-  padding-bottom: env(safe-area-inset-bottom);
-  z-index: 10;
-}
-nav.tabbar button {
-  flex: 1; background: none; border: none; padding: 9px 4px 8px;
-  display: flex; flex-direction: column; align-items: center; gap: 3px;
-  color: var(--text-secondary); font-family: var(--font); cursor: pointer;
-}
-nav.tabbar button .icon { font-size: 18px; line-height: 1; }
-nav.tabbar button .label { font-size: 10px; font-weight: 600; }
-nav.tabbar button.active { color: var(--accent); }
-nav.tabbar button:disabled { opacity: .4; }
-
-.tab-panel { display: none; }
-.tab-panel.active { display: flex; flex-direction: column; gap: 12px; }
+.state-msg { text-align: center; padding: 60px 20px; color: var(--text-secondary); font-size: 13px; }
 </style>
 </head>
 <body>
-<header>
-  <div class="eyebrow">Техника для жизни · ООО «Сириус»</div>
-  <h1 id="tab-title">Прибыль и маржа</h1>
-  <div class="updated" id="updated-at">загрузка…</div>
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer">
+  <div class="brand">
+    <div class="brand-mark">ИИ</div>
+    <div>
+      <div class="brand-name">ИИ-менеджер</div>
+      <div class="brand-sub">Техника для жизни</div>
+    </div>
+  </div>
+  <nav>
+    <button data-view="dashboard" class="active"><span class="ic">◆</span>Дашборд</button>
+    <button data-view="orders"><span class="ic">▤</span>Заказы</button>
+    <button data-view="buyout"><span class="ic">↺</span>Выкупы</button>
+    <button data-view="ads"><span class="ic">▲</span>Реклама</button>
+  </nav>
+  <div class="drawer-footer">ООО «Сириус» · WB API</div>
+</aside>
+
+<header class="topbar">
+  <button class="icon-btn" id="menuBtn">☰</button>
+  <div class="title-block">
+    <div class="eyebrow">Техника для жизни</div>
+    <h1 id="viewTitle">Дашборд</h1>
+  </div>
+  <div class="status-dot" title="Данные обновляются"></div>
 </header>
 
 <main>
-  <section id="panel-profit" class="tab-panel active"></section>
-  <section id="panel-orders" class="tab-panel">
-    <div class="state-msg">Вкладка «Заказы» появится в следующей версии</div>
-  </section>
-  <section id="panel-buyout" class="tab-panel">
-    <div class="state-msg">Вкладка «Выкупы» появится в следующей версии</div>
-  </section>
-  <section id="panel-ads" class="tab-panel">
-    <div class="state-msg">Вкладка «Реклама» появится в следующей версии</div>
-  </section>
+  <section id="view-dashboard"></section>
+  <section id="view-orders" style="display:none"><div class="state-msg">Вкладка «Заказы» появится в следующей версии</div></section>
+  <section id="view-buyout" style="display:none"><div class="state-msg">Вкладка «Выкупы» появится в следующей версии</div></section>
+  <section id="view-ads" style="display:none"><div class="state-msg">Вкладка «Реклама» появится в следующей версии</div></section>
 </main>
-
-<nav class="tabbar">
-  <button data-tab="orders" data-title="Заказы"><span class="icon">📦</span><span class="label">Заказы</span></button>
-  <button data-tab="buyout" data-title="Выкупы"><span class="icon">↩️</span><span class="label">Выкупы</span></button>
-  <button data-tab="profit" data-title="Прибыль и маржа" class="active"><span class="icon">💰</span><span class="label">Прибыль</span></button>
-  <button data-tab="ads" data-title="Реклама"><span class="icon">📣</span><span class="label">Реклама</span></button>
-</nav>
 
 <script>
 const tg = window.Telegram && window.Telegram.WebApp;
-if (tg) {
-  tg.ready();
-  tg.expand();
-  const applyTheme = () => {
-    const p = tg.themeParams || {};
-    const root = document.documentElement.style;
-    if (p.bg_color) root.setProperty('--bg', p.bg_color);
-    if (p.secondary_bg_color) root.setProperty('--surface-2', p.secondary_bg_color);
-    if (p.text_color) root.setProperty('--text', p.text_color);
-    if (p.hint_color) root.setProperty('--text-secondary', p.hint_color);
-  };
-  applyTheme();
-  tg.onEvent('themeChanged', applyTheme);
-}
+if (tg) { tg.ready(); tg.expand(); }
+function initData() { return tg ? tg.initData : ''; }
 
-function initData() {
-  return tg ? tg.initData : '';
-}
-
-// Tabs
-document.querySelectorAll('nav.tabbar button').forEach(btn => {
+// Drawer
+const drawer = document.getElementById('drawer');
+const scrim = document.getElementById('scrim');
+document.getElementById('menuBtn').addEventListener('click', () => {
+  drawer.classList.add('open'); scrim.classList.add('open');
+});
+scrim.addEventListener('click', () => {
+  drawer.classList.remove('open'); scrim.classList.remove('open');
+});
+document.querySelectorAll('.drawer nav button').forEach(btn => {
   btn.addEventListener('click', () => {
-    if (btn.disabled) return;
-    document.querySelectorAll('nav.tabbar button').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.drawer nav button').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    document.getElementById('panel-' + btn.dataset.tab).classList.add('active');
-    document.getElementById('tab-title').textContent = btn.dataset.title;
+    document.querySelectorAll('main > section').forEach(s => s.style.display = 'none');
+    document.getElementById('view-' + btn.dataset.view).style.display = 'block';
+    document.getElementById('viewTitle').textContent = btn.textContent.trim();
+    drawer.classList.remove('open'); scrim.classList.remove('open');
   });
 });
 
@@ -181,73 +251,150 @@ function fmtMoney(v) {
 }
 function fmtNum(v) { return Math.round(v).toLocaleString('ru-RU'); }
 
-async function loadMargin() {
-  const panel = document.getElementById('panel-profit');
+function deltaHtml(cmp) {
+  if (!cmp || cmp.pct === null || cmp.pct === undefined) return '';
+  const dir = cmp.pct > 0.05 ? 'up' : cmp.pct < -0.05 ? 'down' : 'flat';
+  const arrow = dir === 'up' ? '▲' : dir === 'down' ? '▼' : '·';
+  const sign = cmp.pct > 0 ? '+' : '';
+  return `<div class="delta ${dir}">${arrow} ${sign}${cmp.pct.toFixed(1)}%</div>`;
+}
+
+async function loadDashboard() {
+  const el = document.getElementById('view-dashboard');
   try {
     const res = await fetch('/api/margin', { headers: { 'X-Telegram-Init-Data': initData() } });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
-    renderMargin(data);
+    renderDashboard(data);
   } catch (e) {
-    panel.innerHTML = `<div class="state-msg">Не удалось загрузить данные.<br>${e.message}</div>`;
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить данные.<br>${e.message}</div>`;
   }
 }
 
-function renderMargin(data) {
+function renderDashboard(data) {
+  const el = document.getElementById('view-dashboard');
   const acc = data.account;
+  const cmp = data.compare || {};
   const genDate = new Date(data.generated_at);
-  document.getElementById('updated-at').textContent = 'обновлено ' + genDate.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const updatedStr = genDate.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 
-  const sortedProducts = [...data.products].sort((a, b) => b.profit - a.profit);
-  const maxAbsProfit = Math.max(...sortedProducts.map(p => Math.abs(p.profit)), 1);
-  const costKnown = acc.cost_prices_known_for;
-  const costTotal = acc.cost_prices_total_products;
+  const kpis = [
+    { label: 'Выручка', value: fmtMoney(acc.revenue), cmp: cmp.revenue },
+    { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit },
+    { label: 'Реклама', value: fmtMoney(acc.ad_spend), cmp: cmp.ad_spend, invert: true },
+    { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent },
+  ];
 
-  const productsHtml = sortedProducts.map(p => {
-    const negClass = p.profit < 0 ? 'neg' : 'pos';
-    const barWidth = Math.max(4, Math.abs(p.profit) / maxAbsProfit * 100);
-    return `
-    <div class="product-card">
-      <div class="product-top">
-        <div class="product-name">${p.title}${!p.has_cost_price ? '<span class="no-cost-badge">без себест.</span>' : ''}</div>
-        <div class="product-margin ${negClass}">${fmtMoney(p.profit)}</div>
+  const structureItems = [
+    { name: 'Прибыль', value: acc.profit, color: 'var(--positive)' },
+    { name: 'Комиссия WB', value: acc.commission, color: '#e5484d' },
+    { name: 'Логистика', value: acc.logistics, color: '#5b9bd5' },
+    { name: 'Реклама', value: acc.ad_spend, color: 'var(--accent)' },
+    { name: 'Себестоимость', value: acc.cogs_total, color: '#f0a35e' },
+    { name: 'Хранение', value: acc.storage, color: '#b48ae0' },
+    { name: 'Штрафы/удержания', value: acc.penalty_deduction, color: '#8a8f87' },
+  ].filter(i => i.value > 0);
+  const structureTotal = structureItems.reduce((s, i) => s + i.value, 0) || 1;
+
+  const structureHtml = structureItems.map(i => {
+    const pct = (i.value / structureTotal * 100);
+    return `<div class="structure-item">
+      <div class="top-line">
+        <div class="name"><span class="dot" style="background:${i.color}"></span>${i.name}</div>
+        <div class="amount">${pct.toFixed(1)}% · ${fmtMoney(i.value)}</div>
       </div>
-      <div class="product-bar-track"><div class="product-bar-fill ${negClass === 'neg' ? 'neg' : ''}" style="width:${barWidth}%"></div></div>
-      <div class="product-meta">
-        <span>выручка ${fmtMoney(p.revenue)} · ${p.qty} шт.</span>
-        <span>маржа ${p.margin_percent.toFixed(1)}%</span>
-      </div>
+      <div class="structure-track"><div class="structure-fill" style="width:${pct}%;background:${i.color}"></div></div>
     </div>`;
   }).join('');
 
-  document.getElementById('panel-profit').innerHTML = `
-    <div class="hero-card">
-      <div class="hero-label">Прибыль за ${data.period_days} дн. ${costTotal ? '' : ''}</div>
-      <div class="hero-value">${fmtMoney(acc.profit)}</div>
-      <div class="hero-sub">маржа ${acc.margin_percent.toFixed(1)}% от выручки ${fmtMoney(acc.revenue)}</div>
-      <div class="hero-row">
-        <div class="hero-metric"><div class="k">Комиссия WB</div><div class="v">${fmtMoney(acc.commission)}</div></div>
-        <div class="hero-metric"><div class="k">Логистика</div><div class="v">${fmtMoney(acc.logistics)}</div></div>
-        <div class="hero-metric"><div class="k">Хранение</div><div class="v">${fmtMoney(acc.storage)}</div></div>
+  const sortedProducts = [...data.products].sort((a, b) => b.profit - a.profit).slice(0, 8);
+  const maxAbsProfit = Math.max(...sortedProducts.map(p => Math.abs(p.profit)), 1);
+  const productsHtml = sortedProducts.map(p => {
+    const neg = p.profit < 0;
+    const barWidth = Math.max(4, Math.abs(p.profit) / maxAbsProfit * 100);
+    return `<div class="product-card">
+      <div class="product-top">
+        <div class="product-name-wrap">
+          <div class="product-name">${p.title}</div>
+          ${!p.has_cost_price ? '<span class="no-cost-badge">без себест.</span>' : ''}
+        </div>
+        <div class="product-profit ${neg ? 'neg' : ''}">${fmtMoney(p.profit)}</div>
       </div>
+      <div class="product-bar-track"><div class="product-bar-fill ${neg ? 'neg' : ''}" style="width:${barWidth}%"></div></div>
+      <div class="product-meta"><span>выручка ${fmtMoney(p.revenue)} · ${p.qty} шт.</span><span>маржа ${p.margin_percent.toFixed(1)}%</span></div>
+    </div>`;
+  }).join('');
+
+  const costKnown = acc.cost_prices_known_for, costTotal = acc.cost_prices_total_products;
+
+  el.innerHTML = `
+    <div class="period-row">
+      <div class="period">За ${data.period_days} дн. · Δ к пред. периоду</div>
+      <div class="updated">обновлено ${updatedStr}</div>
     </div>
 
     <div class="kpi-grid">
-      <div class="kpi-card"><div class="k">Реклама</div><div class="v neg">${fmtMoney(acc.ad_spend)}</div></div>
-      <div class="kpi-card"><div class="k">Штрафы/удержания</div><div class="v neg">${fmtMoney(acc.penalty_deduction)}</div></div>
-      <div class="kpi-card"><div class="k">К выплате от WB</div><div class="v">${fmtMoney(acc.forpay)}</div></div>
-      <div class="kpi-card"><div class="k">Себестоимость</div><div class="v">${costKnown ? fmtMoney(acc.cogs_total) : '—'}</div></div>
+      ${kpis.map(k => `
+        <div class="kpi-card">
+          <div class="k">${k.label}</div>
+          <div class="v">${k.value}</div>
+          ${deltaHtml(k.invert ? { pct: k.cmp && k.cmp.pct !== null ? -k.cmp.pct : null } : k.cmp)}
+        </div>`).join('')}
     </div>
 
-    ${costKnown < costTotal ? `<div class="notice">⚠️ Себестоимость указана для ${costKnown} из ${costTotal} товаров. Пока прибыль по остальным товарам завышена — не учтена закупочная цена.</div>` : ''}
+    <div class="card">
+      <h3>Выручка по дням</h3>
+      <canvas id="revenueChart"></canvas>
+    </div>
 
-    <div class="section-title">Товары <span class="hint">по прибыли</span></div>
-    <div class="product-list">${productsHtml}</div>
+    <div class="card">
+      <h3>Структура выручки</h3>
+      <div class="structure-row">${structureHtml}</div>
+    </div>
+
+    ${costKnown < costTotal ? `<div class="notice">Себестоимость указана для ${costKnown} из ${costTotal} товаров — прибыль по остальным пока завышена.</div>` : ''}
+
+    <div class="card">
+      <h3>Топ товаров по прибыли</h3>
+      <div class="product-list">${productsHtml}</div>
+    </div>
+
+    <div class="card">
+      <h3>Статус</h3>
+      <div class="status-list">
+        <div class="status-item"><div class="left"><span class="dot ok"></span>Данные WB API</div><div class="val">обновлено ${updatedStr}</div></div>
+        <div class="status-item"><div class="left"><span class="dot ${costKnown < costTotal ? 'warn' : 'ok'}"></span>Себестоимость</div><div class="val">${costKnown}/${costTotal} товаров</div></div>
+        <div class="status-item"><div class="left"><span class="dot ok"></span>Продано за период</div><div class="val">${fmtNum(acc.qty_total || 0)} шт.</div></div>
+      </div>
+    </div>
   `;
+
+  const styles = getComputedStyle(document.documentElement);
+  const cssVar = n => styles.getPropertyValue(n).trim();
+  new Chart(document.getElementById('revenueChart'), {
+    type: 'line',
+    data: {
+      labels: data.daily.map(d => d.date.slice(5)),
+      datasets: [{
+        data: data.daily.map(d => d.revenue),
+        borderColor: cssVar('--accent'),
+        backgroundColor: cssVar('--accent') + '26',
+        fill: true, tension: 0.35, pointRadius: 0, borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => fmtMoney(c.parsed.y) } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: cssVar('--text-secondary'), maxTicksLimit: 6, font: { size: 10 } } },
+        y: { grid: { color: cssVar('--border') }, ticks: { color: cssVar('--text-secondary'), font: { size: 10 }, callback: v => (v/1000) + 'k' } }
+      }
+    }
+  });
 }
 
-loadMargin();
-setInterval(loadMargin, 5 * 60 * 1000);
+loadDashboard();
+setInterval(loadDashboard, 5 * 60 * 1000);
 </script>
 </body>
 </html>

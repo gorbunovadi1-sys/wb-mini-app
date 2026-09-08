@@ -68,15 +68,24 @@ def get_report_detail(report_id):
     return rows
 
 
-def get_active_campaign_ids():
+def get_active_campaign_ids(changed_since=None):
+    """Returns campaign ids that are currently manageable (ready/active/paused),
+    plus completed campaigns (status 7) that changed on/after `changed_since`
+    (an ISO date string) — keeps the list from including years of old history."""
     r = requests.get(f"{ADVERT_BASE}/adv/v1/promotion/count", headers=H, timeout=30)
     r.raise_for_status()
     data = r.json()
     ids = []
     for group in data.get("adverts", []):
-        if group.get("status") in (4, 9, 11):
+        status = group.get("status")
+        if status in (4, 9, 11):
             for a in group.get("advert_list", []):
                 ids.append(a["advertId"])
+        elif status == 7 and changed_since:
+            for a in group.get("advert_list", []):
+                change_time = a.get("changeTime", "")
+                if change_time[:10] >= changed_since:
+                    ids.append(a["advertId"])
     return ids
 
 
