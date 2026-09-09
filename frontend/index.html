@@ -183,6 +183,60 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 }
 
 .state-msg { text-align: center; padding: 60px 20px; color: var(--text-secondary); font-size: 13px; }
+
+/* ---- Marketplace switch ---- */
+.mp-switch {
+  display: flex; gap: 3px; background: var(--surface-2); border-radius: 10px; padding: 3px; margin: 0 8px 18px;
+}
+.mp-switch button {
+  flex: 1; border: none; background: none; padding: 8px 0; border-radius: 8px;
+  font-family: var(--font); font-size: 12.5px; font-weight: 600; color: var(--text-secondary); cursor: pointer;
+}
+.mp-switch button.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+
+/* ---- Ozon: price table ---- */
+.price-list { display: flex; flex-direction: column; gap: 8px; }
+.price-row {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 6px;
+}
+.price-row .p-name { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.price-row .p-meta { font-size: 10.5px; color: var(--text-secondary); font-family: var(--font-mono); }
+.price-row .p-fields { display: flex; gap: 8px; align-items: center; }
+.price-row .p-fields label { font-size: 10px; color: var(--text-secondary); display: flex; flex-direction: column; gap: 3px; flex: 1; }
+.price-row input {
+  width: 100%; box-sizing: border-box; background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px;
+  padding: 6px 8px; font-family: var(--font-mono); font-size: 12.5px; color: var(--text);
+}
+.price-row .p-save {
+  flex: none; align-self: flex-end; border: none; background: var(--accent); color: var(--accent-text-on);
+  font-family: var(--font); font-size: 11.5px; font-weight: 600; padding: 7px 12px; border-radius: 7px; cursor: pointer;
+}
+.price-row .p-save:disabled { opacity: 0.5; cursor: default; }
+.price-row .p-save.saved { background: var(--positive); }
+.price-index-badge { font-size: 9.5px; padding: 1px 6px; border-radius: 8px; font-family: var(--font); font-weight: 600; }
+.price-index-badge.SUPER, .price-index-badge.PROFIT { background: var(--warn-bg); color: var(--positive); }
+.price-index-badge.RED { background: rgba(224,72,61,0.12); color: var(--negative); }
+.search-box {
+  width: 100%; box-sizing: border-box; background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; font-family: var(--font); font-size: 13px; color: var(--text);
+}
+
+/* ---- Ozon: event feed (promotions / dimensions) ---- */
+.event-list { display: flex; flex-direction: column; gap: 8px; }
+.event-row {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.event-row .e-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.event-row .e-name { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.event-row .e-badge { flex: none; font-size: 9.5px; padding: 2px 7px; border-radius: 8px; font-weight: 600; }
+.event-row .e-badge.joined, .event-row .e-badge.up { background: var(--warn-bg); color: var(--positive); }
+.event-row .e-badge.left, .event-row .e-badge.down { background: rgba(224,72,61,0.12); color: var(--negative); }
+.event-row .e-detail { font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono); }
+.event-row .e-time { font-size: 10px; color: var(--text-secondary); }
+.promo-current-item { display: flex; justify-content: space-between; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.promo-current-item:last-child { border-bottom: none; }
 </style>
 </head>
 <body>
@@ -195,13 +249,23 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
       <div class="brand-sub">Техника для жизни</div>
     </div>
   </div>
-  <nav>
+  <div class="mp-switch">
+    <button data-mp="wb" class="active">WB</button>
+    <button data-mp="ozon">Ozon</button>
+  </div>
+  <nav id="nav-wb">
     <button data-view="dashboard" class="active"><span class="ic">◆</span>Дашборд</button>
     <button data-view="orders"><span class="ic">▤</span>Заказы</button>
     <button data-view="buyout"><span class="ic">↺</span>Выкупы</button>
     <button data-view="ads"><span class="ic">▲</span>Реклама</button>
   </nav>
-  <div class="drawer-footer">ООО «Сириус» · WB API</div>
+  <nav id="nav-ozon" style="display:none">
+    <button data-view="ozon-dashboard" class="active"><span class="ic">◆</span>Дашборд</button>
+    <button data-view="ozon-prices"><span class="ic">₽</span>Цены</button>
+    <button data-view="ozon-promotions"><span class="ic">%</span>Акции</button>
+    <button data-view="ozon-dimensions"><span class="ic">▦</span>Габариты</button>
+  </nav>
+  <div class="drawer-footer">ООО «Сириус» · <span id="apiLabel">WB API</span></div>
 </aside>
 
 <header class="topbar">
@@ -218,6 +282,11 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
   <section id="view-orders" style="display:none"><div class="state-msg">Вкладка «Заказы» появится в следующей версии</div></section>
   <section id="view-buyout" style="display:none"><div class="state-msg">Вкладка «Выкупы» появится в следующей версии</div></section>
   <section id="view-ads" style="display:none"><div class="state-msg">Вкладка «Реклама» появится в следующей версии</div></section>
+
+  <section id="view-ozon-dashboard" style="display:none"></section>
+  <section id="view-ozon-prices" style="display:none"></section>
+  <section id="view-ozon-promotions" style="display:none"></section>
+  <section id="view-ozon-dimensions" style="display:none"></section>
 </main>
 
 <script>
@@ -234,14 +303,57 @@ document.getElementById('menuBtn').addEventListener('click', () => {
 scrim.addEventListener('click', () => {
   drawer.classList.remove('open'); scrim.classList.remove('open');
 });
+function activateView(viewName, title) {
+  document.querySelectorAll('main > section').forEach(s => s.style.display = 'none');
+  document.getElementById('view-' + viewName).style.display = 'block';
+  document.getElementById('viewTitle').textContent = title;
+}
+
+const ozonLoaders = {
+  'ozon-dashboard': () => loadOzonDashboard(),
+  'ozon-prices': () => loadOzonPrices(),
+  'ozon-promotions': () => loadOzonPromotions(),
+  'ozon-dimensions': () => loadOzonDimensions(),
+};
+
 document.querySelectorAll('.drawer nav button').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.drawer nav button').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    document.querySelectorAll('main > section').forEach(s => s.style.display = 'none');
-    document.getElementById('view-' + btn.dataset.view).style.display = 'block';
-    document.getElementById('viewTitle').textContent = btn.textContent.trim();
+    activateView(btn.dataset.view, btn.textContent.trim());
     drawer.classList.remove('open'); scrim.classList.remove('open');
+    if (ozonLoaders[btn.dataset.view]) ozonLoaders[btn.dataset.view]();
+  });
+});
+
+// Marketplace switch
+const navWb = document.getElementById('nav-wb');
+const navOzon = document.getElementById('nav-ozon');
+const apiLabel = document.getElementById('apiLabel');
+let currentMarketplace = 'wb';
+
+document.querySelectorAll('.mp-switch button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.mp === currentMarketplace) return;
+    currentMarketplace = btn.dataset.mp;
+    document.querySelectorAll('.mp-switch button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    if (currentMarketplace === 'wb') {
+      navWb.style.display = ''; navOzon.style.display = 'none';
+      apiLabel.textContent = 'WB API';
+      navOzon.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+      const first = navWb.querySelector('button');
+      first.classList.add('active');
+      activateView('dashboard', 'Дашборд');
+    } else {
+      navWb.style.display = 'none'; navOzon.style.display = '';
+      apiLabel.textContent = 'Ozon API';
+      navWb.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+      const first = navOzon.querySelector('button');
+      first.classList.add('active');
+      activateView('ozon-dashboard', 'Дашборд');
+      loadOzonDashboard();
+    }
   });
 });
 
@@ -395,6 +507,289 @@ function renderDashboard(data) {
 
 loadDashboard();
 setInterval(loadDashboard, 5 * 60 * 1000);
+
+// ==================== Ozon ====================
+
+async function ozonFetch(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({ 'X-Telegram-Init-Data': initData() }, opts.headers || {});
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+
+function fmtDateTime(iso) {
+  return new Date(iso).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+// ---- Ozon dashboard ----
+let ozonDashboardLoaded = false;
+async function loadOzonDashboard() {
+  const el = document.getElementById('view-ozon-dashboard');
+  if (!ozonDashboardLoaded) el.innerHTML = '<div class="state-msg">Загрузка…</div>';
+  try {
+    const data = await ozonFetch('/api/ozon/margin');
+    renderOzonDashboard(data);
+    ozonDashboardLoaded = true;
+  } catch (e) {
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить данные.<br>${e.message}</div>`;
+  }
+}
+
+function renderOzonDashboard(data) {
+  const el = document.getElementById('view-ozon-dashboard');
+  const acc = data.account;
+  const cmp = data.compare || {};
+  const genDate = new Date(data.generated_at);
+  const updatedStr = genDate.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+
+  const kpis = [
+    { label: 'Выручка', value: fmtMoney(acc.revenue), cmp: cmp.revenue },
+    { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit },
+    { label: 'Комиссия+логистика', value: fmtMoney(acc.fees), invert: true },
+    { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent },
+  ];
+
+  const structureItems = [
+    { name: 'Прибыль', value: acc.profit, color: 'var(--positive)' },
+    { name: 'Комиссия и логистика Ozon', value: acc.fees, color: '#e5484d' },
+    { name: 'Себестоимость', value: acc.cogs_total, color: '#f0a35e' },
+  ].filter(i => i.value > 0);
+  const structureTotal = structureItems.reduce((s, i) => s + i.value, 0) || 1;
+  const structureHtml = structureItems.map(i => {
+    const pct = (i.value / structureTotal * 100);
+    return `<div class="structure-item">
+      <div class="top-line">
+        <div class="name"><span class="dot" style="background:${i.color}"></span>${i.name}</div>
+        <div class="amount">${pct.toFixed(1)}% · ${fmtMoney(i.value)}</div>
+      </div>
+      <div class="structure-track"><div class="structure-fill" style="width:${pct}%;background:${i.color}"></div></div>
+    </div>`;
+  }).join('');
+
+  const sortedProducts = [...data.products].sort((a, b) => b.profit - a.profit).slice(0, 8);
+  const maxAbsProfit = Math.max(...sortedProducts.map(p => Math.abs(p.profit)), 1);
+  const productsHtml = sortedProducts.map(p => {
+    const neg = p.profit < 0;
+    const barWidth = Math.max(4, Math.abs(p.profit) / maxAbsProfit * 100);
+    return `<div class="product-card">
+      <div class="product-top">
+        <div class="product-name-wrap">
+          <div class="product-name">${p.title}</div>
+          ${!p.has_cost_price ? '<span class="no-cost-badge">без себест.</span>' : ''}
+        </div>
+        <div class="product-profit ${neg ? 'neg' : ''}">${fmtMoney(p.profit)}</div>
+      </div>
+      <div class="product-bar-track"><div class="product-bar-fill ${neg ? 'neg' : ''}" style="width:${barWidth}%"></div></div>
+      <div class="product-meta"><span>выручка ${fmtMoney(p.revenue)} · ${p.qty} шт.</span><span>маржа ${p.margin_percent.toFixed(1)}%</span></div>
+    </div>`;
+  }).join('');
+
+  const costKnown = acc.cost_prices_known_for, costTotal = acc.cost_prices_total_products;
+  const reportNotice = !data.report_ready
+    ? `<div class="notice">Отчёт о реализации Ozon за текущий месяц ещё не опубликован — показан последний закрытый месяц (${data.period_label}).</div>`
+    : '';
+
+  el.innerHTML = `
+    <div class="period-row">
+      <div class="period">Отчёт о реализации Ozon за ${data.period_label} · Δ к пред. месяцу</div>
+      <div class="updated">обновлено ${updatedStr}</div>
+    </div>
+
+    <div class="kpi-grid">
+      ${kpis.map(k => `
+        <div class="kpi-card">
+          <div class="k">${k.label}</div>
+          <div class="v">${k.value}</div>
+          ${deltaHtml(k.invert ? null : k.cmp)}
+        </div>`).join('')}
+    </div>
+
+    ${reportNotice}
+
+    <div class="card">
+      <h3>Выручка по дням (оценка, ${data.period_days} дн.)</h3>
+      <canvas id="ozonRevenueChart"></canvas>
+    </div>
+
+    <div class="card">
+      <h3>Структура</h3>
+      <div class="structure-row">${structureHtml}</div>
+    </div>
+
+    ${costKnown < costTotal ? `<div class="notice">Себестоимость указана для ${costKnown} из ${costTotal} товаров — прибыль по остальным пока завышена.</div>` : ''}
+
+    <div class="card">
+      <h3>Топ товаров по прибыли (${data.period_label})</h3>
+      <div class="product-list">${productsHtml}</div>
+    </div>
+  `;
+
+  const styles = getComputedStyle(document.documentElement);
+  const cssVar = n => styles.getPropertyValue(n).trim();
+  new Chart(document.getElementById('ozonRevenueChart'), {
+    type: 'line',
+    data: {
+      labels: data.daily.map(d => d.date.slice(5)),
+      datasets: [{
+        data: data.daily.map(d => d.revenue),
+        borderColor: cssVar('--accent'),
+        backgroundColor: cssVar('--accent') + '26',
+        fill: true, tension: 0.35, pointRadius: 0, borderWidth: 2,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => fmtMoney(c.parsed.y) } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: cssVar('--text-secondary'), maxTicksLimit: 6, font: { size: 10 } } },
+        y: { grid: { color: cssVar('--border') }, ticks: { color: cssVar('--text-secondary'), font: { size: 10 }, callback: v => (v/1000) + 'k' } }
+      }
+    }
+  });
+}
+
+// ---- Ozon prices ----
+let ozonPricesCache = [];
+async function loadOzonPrices() {
+  const el = document.getElementById('view-ozon-prices');
+  el.innerHTML = '<div class="state-msg">Загрузка…</div>';
+  try {
+    const data = await ozonFetch('/api/ozon/prices');
+    ozonPricesCache = data.items;
+    renderOzonPrices(ozonPricesCache);
+  } catch (e) {
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить цены.<br>${e.message}</div>`;
+  }
+}
+
+function renderOzonPrices(items) {
+  const el = document.getElementById('view-ozon-prices');
+  el.innerHTML = `
+    <input class="search-box" id="priceSearch" placeholder="Поиск по названию или артикулу…">
+    <div class="price-list" id="priceList"></div>
+  `;
+  document.getElementById('priceSearch').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    const filtered = q ? items.filter(i => (i.name||'').toLowerCase().includes(q) || (i.offer_id||'').toLowerCase().includes(q)) : items;
+    renderPriceList(filtered);
+  });
+  renderPriceList(items);
+}
+
+function renderPriceList(items) {
+  const list = document.getElementById('priceList');
+  list.innerHTML = items.slice(0, 200).map(p => `
+    <div class="price-row" data-offer="${p.offer_id}">
+      <div>
+        <div class="p-name">${p.name}</div>
+        <div class="p-meta">${p.offer_id} ${p.price_index ? `<span class="price-index-badge ${p.price_index}">${p.price_index}</span>` : ''}</div>
+      </div>
+      <div class="p-fields">
+        <label>Цена<input type="number" class="f-price" value="${p.price ?? ''}"></label>
+        <label>До скидки<input type="number" class="f-old" value="${p.old_price ?? ''}"></label>
+        <label>Мин. цена<input type="number" class="f-min" value="${p.min_price ?? ''}"></label>
+        <button class="p-save">Сохранить</button>
+      </div>
+    </div>
+  `).join('') || '<div class="state-msg">Ничего не найдено</div>';
+
+  list.querySelectorAll('.price-row').forEach(row => {
+    row.querySelector('.p-save').addEventListener('click', async () => {
+      const btn = row.querySelector('.p-save');
+      const offer_id = row.dataset.offer;
+      const price = parseFloat(row.querySelector('.f-price').value);
+      const old_price = parseFloat(row.querySelector('.f-old').value);
+      const min_price = parseFloat(row.querySelector('.f-min').value);
+      if (!price) { alert('Укажите цену'); return; }
+      btn.disabled = true; btn.textContent = 'Сохранение…';
+      try {
+        await ozonFetch('/api/ozon/prices', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ updates: [{ offer_id, price, old_price: old_price || undefined, min_price: min_price || undefined }] }),
+        });
+        btn.textContent = 'Сохранено ✓'; btn.classList.add('saved');
+        setTimeout(() => { btn.textContent = 'Сохранить'; btn.classList.remove('saved'); btn.disabled = false; }, 1500);
+      } catch (e) {
+        btn.textContent = 'Ошибка'; btn.disabled = false;
+        alert('Не удалось сохранить цену: ' + e.message);
+      }
+    });
+  });
+}
+
+// ---- Ozon promotions ----
+async function loadOzonPromotions() {
+  const el = document.getElementById('view-ozon-promotions');
+  el.innerHTML = '<div class="state-msg">Загрузка…</div>';
+  try {
+    const data = await ozonFetch('/api/ozon/promotions');
+    renderOzonPromotions(data);
+  } catch (e) {
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить акции.<br>${e.message}</div>`;
+  }
+}
+
+function renderOzonPromotions(data) {
+  const el = document.getElementById('view-ozon-promotions');
+  const eventsHtml = data.recent_events.length ? data.recent_events.map(ev => `
+    <div class="event-row">
+      <div class="e-top">
+        <div class="e-name">${ev.title}</div>
+        <span class="e-badge ${ev.event}">${ev.event === 'joined' ? 'Присоединился' : 'Выбыл'}</span>
+      </div>
+      <div class="e-detail">${ev.action_title}</div>
+      <div class="e-time">${fmtDateTime(ev.at)}</div>
+    </div>
+  `).join('') : '<div class="state-msg">Изменений пока не зафиксировано</div>';
+
+  el.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card"><div class="k">Товаров в акциях</div><div class="v">${fmtNum(data.products_in_promotions)}</div></div>
+    </div>
+    <div class="card">
+      <h3>Последние изменения (попадание/вылет из акций)</h3>
+      <div class="event-list">${eventsHtml}</div>
+    </div>
+  `;
+}
+
+// ---- Ozon dimensions ----
+async function loadOzonDimensions() {
+  const el = document.getElementById('view-ozon-dimensions');
+  el.innerHTML = '<div class="state-msg">Загрузка…</div>';
+  try {
+    const data = await ozonFetch('/api/ozon/dimensions');
+    renderOzonDimensions(data);
+  } catch (e) {
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить габариты.<br>${e.message}</div>`;
+  }
+}
+
+function renderOzonDimensions(data) {
+  const el = document.getElementById('view-ozon-dimensions');
+  const eventsHtml = data.recent_events.length ? data.recent_events.map(ev => `
+    <div class="event-row">
+      <div class="e-top">
+        <div class="e-name">${ev.title}</div>
+        <span class="e-badge ${ev.new_value > ev.old_value ? 'up' : 'down'}">${ev.field_label}</span>
+      </div>
+      <div class="e-detail">${ev.old_value}${ev.unit} → ${ev.new_value}${ev.unit}</div>
+      <div class="e-time">${fmtDateTime(ev.at)}</div>
+    </div>
+  `).join('') : '<div class="state-msg">Изменений пока не зафиксировано</div>';
+
+  el.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card"><div class="k">Товаров отслеживается</div><div class="v">${fmtNum(data.products_tracked)}</div></div>
+    </div>
+    <div class="card">
+      <h3>Последние изменения габаритов/веса</h3>
+      <div class="event-list">${eventsHtml}</div>
+    </div>
+  `;
+}
 </script>
 </body>
 </html>

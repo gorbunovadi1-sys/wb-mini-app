@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>ИИ Движок</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@500;600;700&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1" integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" crossorigin="anonymous"></script>
+<style>
+:root {
+  --bg: #0a0a0a; --surface: #141414; --surface-2: #1c1c1c; --border: #262626;
+  --text: #ffffff; --text-secondary: #8c8c8c;
+  --accent: #c6ff00; --accent-dim: rgba(198,255,0,0.12); --accent-text-on: #0c1408;
+  --positive: #c6ff00; --negative: #ff5c5c;
+  --warn-bg: rgba(255,45,170,0.12); --warn-text: #ff2daa;
+  --scrim: rgba(0,0,0,0.6);
+  --font: "IBM Plex Sans", -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body { font-family: var(--font); background: var(--bg); color: var(--text); font-size: 14px; }
+
+.topbar {
+  position: sticky; top: 0; z-index: 20; padding: 16px; background: var(--bg); border-bottom: 1px solid var(--border);
+}
+.topbar h1 { font-size: 17px; font-weight: 700; }
+.topbar .sub { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .08em; margin-top: 2px; }
+
+main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-width: 720px; margin: 0 auto; }
+
+.cabinet-tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.cabinet-tabs button {
+  flex: none; padding: 8px 14px; border-radius: 20px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text-secondary); font-family: var(--font); font-size: 12.5px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+}
+.cabinet-tabs button.active { background: var(--accent); color: var(--accent-text-on); border-color: var(--accent); }
+.cabinet-tabs button.add { color: var(--accent); }
+
+.kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.kpi-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 13px 14px; }
+.kpi-card .k { font-size: 10.5px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
+.kpi-card .v { font-family: var(--font-mono); font-size: 19px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.delta { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; margin-top: 6px; font-family: var(--font-mono); }
+.delta.up { color: var(--positive); }
+.delta.down { color: var(--negative); }
+.delta.flat { color: var(--text-secondary); }
+
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
+.card h3 { font-size: 12.5px; font-weight: 600; margin-bottom: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
+.card canvas { max-height: 200px; }
+
+.product-list { display: flex; flex-direction: column; gap: 10px; }
+.product-card .product-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; min-width: 0; }
+.product-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.product-profit { font-family: var(--font-mono); font-size: 13px; font-weight: 700; flex: none; }
+.product-profit.neg { color: var(--negative); }
+.product-bar-track { height: 5px; background: var(--surface-2); border-radius: 3px; margin-bottom: 6px; overflow: hidden; }
+.product-bar-fill { height: 100%; border-radius: 3px; background: var(--accent); }
+.product-bar-fill.neg { background: var(--negative); }
+.product-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono); }
+
+.notice { background: var(--warn-bg); border-radius: 10px; padding: 10px 12px; font-size: 12px; color: var(--warn-text); line-height: 1.4; }
+.state-msg { text-align: center; padding: 60px 20px; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
+.state-msg b { color: var(--text); }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <h1>ИИ Движок</h1>
+  <div class="sub" id="topbarSub">выбери кабинет</div>
+</header>
+
+<main>
+  <div class="cabinet-tabs" id="cabinetTabs"></div>
+  <div id="content"><div class="state-msg">Загрузка…</div></div>
+</main>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+function initData() { return tg ? tg.initData : ''; }
+
+function devTelegramId() {
+  // Local testing only: /?telegram_id=... in the URL when there's no real Telegram context.
+  return new URLSearchParams(location.search).get('telegram_id');
+}
+
+function authQS() {
+  const id = devTelegramId();
+  return id ? `?telegram_id=${id}` : '';
+}
+
+async function apiFetch(path) {
+  const res = await fetch(path + authQS(), { headers: { 'X-Telegram-Init-Data': initData() } });
+  if (!res.ok) throw new Error('HTTP ' + res.status);
+  return res.json();
+}
+
+function fmtMoney(v) {
+  const sign = v < 0 ? '−' : '';
+  return sign + Math.round(Math.abs(v)).toLocaleString('ru-RU') + ' ₽';
+}
+function fmtNum(v) { return Math.round(v).toLocaleString('ru-RU'); }
+
+function deltaHtml(cmp) {
+  if (!cmp || cmp.pct === null || cmp.pct === undefined) return '';
+  const dir = cmp.pct > 0.05 ? 'up' : cmp.pct < -0.05 ? 'down' : 'flat';
+  const arrow = dir === 'up' ? '▲' : dir === 'down' ? '▼' : '·';
+  const sign = cmp.pct > 0 ? '+' : '';
+  return `<div class="delta ${dir}">${arrow} ${sign}${cmp.pct.toFixed(1)}%</div>`;
+}
+
+let cabinetsList = [];
+let activeCabinetId = null;
+
+async function boot() {
+  try {
+    const data = await apiFetch('/api/me/cabinets');
+    cabinetsList = data.cabinets;
+  } catch (e) {
+    document.getElementById('content').innerHTML = `<div class="state-msg">Не удалось загрузить кабинеты.<br>${e.message}</div>`;
+    return;
+  }
+  renderTabs();
+  if (cabinetsList.length) {
+    activeCabinetId = cabinetsList[0].id;
+    loadDashboard(activeCabinetId);
+  } else {
+    document.getElementById('content').innerHTML = `<div class="state-msg"><b>Кабинеты пока не подключены.</b><br>Вернись в чат с ботом и нажми «Подключить Wildberries» или «Подключить Ozon».</div>`;
+  }
+}
+
+function renderTabs() {
+  const el = document.getElementById('cabinetTabs');
+  const marketLabel = { wb: 'WB', ozon: 'Ozon' };
+  el.innerHTML = cabinetsList.map(c => `
+    <button data-id="${c.id}" class="${c.id === activeCabinetId ? 'active' : ''}">${c.display_name || marketLabel[c.marketplace] || c.marketplace}</button>
+  `).join('');
+  el.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activeCabinetId = parseInt(btn.dataset.id, 10);
+      renderTabs();
+      loadDashboard(activeCabinetId);
+    });
+  });
+}
+
+async function loadDashboard(cabinetId) {
+  const el = document.getElementById('content');
+  const cabinet = cabinetsList.find(c => c.id === cabinetId);
+  document.getElementById('topbarSub').textContent = cabinet ? (cabinet.display_name || cabinet.marketplace) : '';
+  el.innerHTML = '<div class="state-msg">Загрузка данных…</div>';
+  try {
+    const data = await apiFetch(`/api/cabinets/${cabinetId}/margin`);
+    renderDashboard(data, cabinet);
+  } catch (e) {
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить данные кабинета.<br>${e.message}</div>`;
+  }
+}
+
+function renderDashboard(data, cabinet) {
+  const el = document.getElementById('content');
+  const acc = data.account;
+  const cmp = data.compare || {};
+  const genDate = new Date(data.generated_at);
+  const updatedStr = genDate.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  const feesLabel = cabinet && cabinet.marketplace === 'ozon' ? 'Комиссия+логистика' : 'Реклама';
+  const feesValue = acc.fees !== undefined ? acc.fees : acc.ad_spend;
+  const periodLabel = data.period_label ? `Отчёт за ${data.period_label}` : `За ${data.period_days} дн.`;
+
+  const kpis = [
+    { label: 'Выручка', value: fmtMoney(acc.revenue), cmp: cmp.revenue },
+    { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit },
+    { label: feesLabel, value: fmtMoney(feesValue || 0) },
+    { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent },
+  ];
+
+  const daily = data.daily || [];
+  const sortedProducts = [...(data.products || [])].sort((a, b) => b.profit - a.profit).slice(0, 8);
+  const maxAbsProfit = Math.max(...sortedProducts.map(p => Math.abs(p.profit)), 1);
+  const productsHtml = sortedProducts.map(p => {
+    const neg = p.profit < 0;
+    const barWidth = Math.max(4, Math.abs(p.profit) / maxAbsProfit * 100);
+    return `<div class="product-card">
+      <div class="product-top">
+        <div class="product-name">${p.title}</div>
+        <div class="product-profit ${neg ? 'neg' : ''}">${fmtMoney(p.profit)}</div>
+      </div>
+      <div class="product-bar-track"><div class="product-bar-fill ${neg ? 'neg' : ''}" style="width:${barWidth}%"></div></div>
+      <div class="product-meta"><span>выручка ${fmtMoney(p.revenue)} · ${p.qty} шт.</span><span>маржа ${p.margin_percent.toFixed(1)}%</span></div>
+    </div>`;
+  }).join('') || '<div class="state-msg">Нет данных за период</div>';
+
+  const costKnown = acc.cost_prices_known_for || 0, costTotal = acc.cost_prices_total_products || 0;
+
+  el.innerHTML = `
+    <div class="notice" style="margin-bottom:2px">${periodLabel} · обновлено ${updatedStr}${costTotal ? ` · себестоимость указана для ${costKnown}/${costTotal} товаров` : ''}</div>
+
+    <div class="kpi-grid">
+      ${kpis.map(k => `
+        <div class="kpi-card">
+          <div class="k">${k.label}</div>
+          <div class="v">${k.value}</div>
+          ${deltaHtml(k.cmp)}
+        </div>`).join('')}
+    </div>
+
+    ${daily.length ? `<div class="card"><h3>Выручка по дням</h3><canvas id="revenueChart"></canvas></div>` : ''}
+
+    <div class="card">
+      <h3>Топ товаров по прибыли</h3>
+      <div class="product-list">${productsHtml}</div>
+    </div>
+  `;
+
+  if (daily.length) {
+    new Chart(document.getElementById('revenueChart'), {
+      type: 'line',
+      data: {
+        labels: daily.map(d => d.date.slice(5)),
+        datasets: [{
+          data: daily.map(d => d.revenue),
+          borderColor: '#c6ff00', backgroundColor: 'rgba(198,255,0,0.15)',
+          fill: true, tension: 0.35, pointRadius: 0, borderWidth: 2,
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => fmtMoney(c.parsed.y) } } },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#8c8c8c', maxTicksLimit: 6, font: { size: 10 } } },
+          y: { grid: { color: '#262626' }, ticks: { color: '#8c8c8c', font: { size: 10 }, callback: v => (v/1000) + 'k' } }
+        }
+      }
+    });
+  }
+}
+
+boot();
+</script>
+</body>
+</html>

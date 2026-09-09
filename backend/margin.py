@@ -43,19 +43,20 @@ def _accumulate(bucket, row):
         bucket["qty"] += int(row.get("quantity") or 0)
 
 
-def build_margin_summary(days: int = 30) -> dict:
+def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
+    client = client or wb_client.default_client
     date_to = datetime.date.today()
     cutoff = date_to - datetime.timedelta(days=days)
     fetch_from = date_to - datetime.timedelta(days=days * 2)
 
     log.info("Fetching sales report list...")
-    reports = wb_client.get_sales_reports(fetch_from.isoformat(), date_to.isoformat(), period="weekly")
+    reports = client.get_sales_reports(fetch_from.isoformat(), date_to.isoformat(), period="weekly")
     report_ids = sorted({r["reportId"] for r in reports})
     log.info(f"{len(report_ids)} reports to pull detail for")
 
     all_rows = []
     for rid in report_ids:
-        all_rows.extend(wb_client.get_report_detail(rid))
+        all_rows.extend(client.get_report_detail(rid))
     log.info(f"{len(all_rows)} detail rows fetched")
 
     per_nm = collections.defaultdict(lambda: {
@@ -95,14 +96,14 @@ def build_margin_summary(days: int = 30) -> dict:
 
     # --- Ad spend: current period allocated per-product, plus previous period total for comparison ---
     log.info("Fetching ad campaign spend...")
-    advert_ids = wb_client.get_active_campaign_ids(changed_since=fetch_from.isoformat())
-    fullstats = wb_client.get_campaign_fullstats(advert_ids, cutoff.isoformat(), date_to.isoformat())
+    advert_ids = client.get_active_campaign_ids(changed_since=fetch_from.isoformat())
+    fullstats = client.get_campaign_fullstats(advert_ids, cutoff.isoformat(), date_to.isoformat())
     total_ad_spend = sum(_num(s, "sum") for s in fullstats)
 
-    prev_fullstats = wb_client.get_campaign_fullstats(advert_ids, fetch_from.isoformat(), (cutoff - datetime.timedelta(days=1)).isoformat())
+    prev_fullstats = client.get_campaign_fullstats(advert_ids, fetch_from.isoformat(), (cutoff - datetime.timedelta(days=1)).isoformat())
     prev_ad_spend = sum(_num(s, "sum") for s in prev_fullstats)
 
-    cost_prices = load_cost_prices()
+    cost_prices = cost_prices if cost_prices is not None else load_cost_prices()
 
     products = []
     for nm, p in per_nm.items():
