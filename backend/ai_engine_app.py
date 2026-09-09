@@ -13,6 +13,7 @@ from . import cabinets
 from . import margin
 from . import ozon_dimensions
 from . import ozon_margin
+from . import ozon_price_monitor
 from . import ozon_prices
 from . import ozon_pricing
 from . import ozon_promotions
@@ -31,6 +32,30 @@ app = FastAPI(title="ИИ Движок API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+async def _run_price_checks(bot):
+    """Runs every 10 minutes: checks all active Ozon cabinets' prices and
+    notifies each owner about products that newly became loss-making since
+    the last check (ozon_price_monitor keeps a per-cabinet snapshot so
+    already-known problem items aren't re-reported every cycle)."""
+    for cabinet in cabinets.list_all_active_cabinets(marketplace="ozon"):
+        try:
+            new_negative = ozon_price_monitor.check_cabinet(cabinet)
+        except Exception:
+            log.exception(f"Price check failed for cabinet {cabinet['id']}")
+            continue
+        if not new_negative:
+            continue
+        lines = [f"• {n['name']} ({n['offer_id']}): {n['profit']} ₽" for n in new_negative]
+        text = (
+            f"⚠️ В кабинете «{cabinet['display_name'] or cabinet['id']}» "
+            f"{len(new_negative)} товар(ов) стали убыточными:\n\n" + "\n".join(lines)
+        )
+        try:
+            await bot.send_message(cabinet["telegram_user_id"], text)
+        except Exception:
+            log.exception(f"Failed to notify user for cabinet {cabinet['id']}")
+
+
 @app.on_event("startup")
 async def on_startup():
     init_db()
@@ -39,6 +64,7 @@ async def on_startup():
     if ai_engine_token:
         import asyncio
         from aiogram.types import MenuButtonWebApp, WebAppInfo
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from .ai_engine_bot import build_bot, build_dispatcher
 
         mini_app_url = os.environ.get("AI_ENGINE_MINI_APP_URL")
@@ -52,6 +78,13 @@ async def on_startup():
         dp = build_dispatcher(mini_app_url)
         asyncio.create_task(dp.start_polling(bot))
         log.info("AI Engine bot polling started")
+
+        # AsyncIOScheduler (not BackgroundScheduler) so the job runs on the
+        # same event loop as the bot — needed to call bot.send_message safely.
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(_run_price_checks, "interval", minutes=10, args=[bot])
+        scheduler.start()
+        log.info("Price monitor scheduled every 10 minutes")
     else:
         log.info("AI_ENGINE_BOT_TOKEN not set — bot polling not started")
 

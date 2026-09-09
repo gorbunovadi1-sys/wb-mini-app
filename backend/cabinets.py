@@ -78,6 +78,25 @@ def deactivate_cabinet(cabinet_id: int, user_id: int) -> bool:
         return True
 
 
+def list_all_active_cabinets(marketplace: str = None) -> list:
+    """Every active cabinet across all users, with decrypted credentials and
+    the owner's Telegram id — used by background jobs (e.g. price monitoring),
+    not exposed via any user-scoped API route."""
+    with SessionLocal() as session:
+        query = session.query(Cabinet, User).join(User, Cabinet.user_id == User.id).filter(Cabinet.is_active.is_(True))
+        if marketplace:
+            query = query.filter(Cabinet.marketplace == marketplace)
+        rows = query.all()
+        return [
+            {
+                "id": c.id, "user_id": c.user_id, "telegram_user_id": u.telegram_user_id,
+                "marketplace": c.marketplace, "display_name": c.display_name,
+                "credentials": json.loads(decrypt(c.encrypted_credentials)),
+            }
+            for c, u in rows
+        ]
+
+
 def get_cost_prices(cabinet_id: int) -> dict:
     """offer_id (Ozon) / str(nm_id) (WB) -> cost price in RUB."""
     with SessionLocal() as session:

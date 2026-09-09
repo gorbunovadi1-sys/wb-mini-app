@@ -612,7 +612,7 @@ async function loadPricing() {
       const data = await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/pricing`);
       pricingItems = data.items;
       pricingItems.forEach(p => {
-        const price = p.min_price || p.price || 0;
+        const price = p.price || p.min_price || 0;
         p.currentProfit = computePriceRow(price, p.cogs_unit || 0, p.commission_pct, p.logistics_estimate).profit;
       });
     }
@@ -685,7 +685,7 @@ function priceCardHtml(p) {
     <div class="price-fields">
       <div class="price-field">
         <label>Цена (без акций)</label>
-        <input type="number" class="price-input" value="${staged ? pendingPriceChanges[p.offer_id].price : (p.min_price || p.price || '')}">
+        <input type="number" class="price-input" value="${staged ? pendingPriceChanges[p.offer_id].price : (p.price || p.min_price || '')}">
       </div>
       <div class="price-field">
         <label>Себестоимость</label>
@@ -765,10 +765,12 @@ function bindPriceCard(card) {
         });
       }
       // Ozon requires price <= old_price (old_price is the pre-discount
-      // reference shown crossed out) — if the new price exceeds it, bump
-      // old_price to match so there's simply no discount shown, instead of
-      // Ozon silently rejecting the whole update ("Old price is less than price").
-      const oldPriceToSend = Math.max(oldPriceOriginal, price);
+      // reference shown crossed out), AND for many price ranges requires the
+      // resulting discount to be > 5% — setting old_price === price passes
+      // the first rule but fails the second ("скидка должна быть больше
+      // 5%"), so when old_price needs raising, give it 10% headroom instead
+      // of matching price exactly.
+      const oldPriceToSend = price > oldPriceOriginal ? Math.ceil(price / 0.9) : oldPriceOriginal;
       pendingPriceChanges[offerId] = { price, old_price: oldPriceToSend };
       card.classList.add('staged');
       updatePushBar();
