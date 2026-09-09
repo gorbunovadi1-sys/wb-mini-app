@@ -193,6 +193,12 @@ class OzonClient:
         data = self._post("/v2/finance/realization", {"year": year, "month": month}, timeout=120)
         return data.get("result", {})
 
+    def get_seller_info(self):
+        """POST /v1/seller/info — company.name is the shop's storefront name
+        (e.g. "Все для дома и дачи"); used to auto-label a connected cabinet
+        instead of a generic "Ozon"."""
+        return self._post("/v1/seller/info", {})
+
 
 # Backward-compat default client for the original single-shop dashboard, built
 # from the process-wide env vars. New (multi-tenant) code should construct its

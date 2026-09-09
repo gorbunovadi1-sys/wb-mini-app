@@ -9,6 +9,7 @@ log = logging.getLogger("wb_client")
 FINANCE_BASE = "https://finance-api.wildberries.ru"
 ADVERT_BASE = "https://advert-api.wildberries.ru"
 STATS_BASE = "https://statistics-api.wildberries.ru"
+COMMON_BASE = "https://common-api.wildberries.ru"
 
 # The finance-reports endpoints share a strict 1 request/minute limit, per account.
 _FINANCE_MIN_INTERVAL = 61
@@ -42,6 +43,14 @@ class WBClient:
         Raises requests.HTTPError (401/403) if the key is wrong."""
         r = requests.get(f"{ADVERT_BASE}/adv/v1/promotion/count", headers=self.headers, timeout=15)
         r.raise_for_status()
+
+    def get_seller_info(self):
+        """GET /api/v1/seller-info — tradeMark is the shop's storefront brand
+        name (e.g. "Техника для жизни"), name is the legal entity; used to
+        auto-label a connected cabinet instead of a generic "Wildberries"."""
+        r = requests.get(f"{COMMON_BASE}/api/v1/seller-info", headers=self.headers, timeout=15)
+        r.raise_for_status()
+        return r.json()
 
     def _finance_post(self, url, payload, timeout=60):
         for attempt in range(5):

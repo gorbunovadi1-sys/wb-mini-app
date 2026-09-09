@@ -111,10 +111,17 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
             await checking.edit_text(f"Не получилось достучаться до WB API, попробуй ещё раз чуть позже.\n{e}")
             return
 
+        display_name = "Wildberries"
+        try:
+            info = await asyncio.to_thread(client.get_seller_info)
+            display_name = info.get("tradeMark") or info.get("name") or display_name
+        except requests.RequestException:
+            log.warning("Could not fetch WB seller-info for display name, using default")
+
         user_id = cabinets.get_or_create_user(message.from_user.id, message.from_user.first_name, message.from_user.username)
-        cabinets.add_cabinet(user_id, "wb", {"api_key": api_key}, display_name="Wildberries")
+        cabinets.add_cabinet(user_id, "wb", {"api_key": api_key}, display_name=display_name)
         await state.clear()
-        await checking.edit_text("Кабинет Wildberries подключён ✓")
+        await checking.edit_text(f"Кабинет «{display_name}» (Wildberries) подключён ✓")
         await message.answer(_cabinets_text(user_id), reply_markup=_cabinets_kb(user_id, mini_app_url))
 
     @dp.message(Onboarding.entering_ozon_client_id)
@@ -144,10 +151,18 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
             await checking.edit_text(f"Не получилось достучаться до Ozon API, попробуй ещё раз чуть позже.\n{e}")
             return
 
+        display_name = "Ozon"
+        try:
+            info = await asyncio.to_thread(client.get_seller_info)
+            company = info.get("company") or {}
+            display_name = company.get("name") or " ".join(filter(None, [company.get("ownership_form"), company.get("legal_name")])) or display_name
+        except requests.RequestException:
+            log.warning("Could not fetch Ozon seller-info for display name, using default")
+
         user_id = cabinets.get_or_create_user(message.from_user.id, message.from_user.first_name, message.from_user.username)
-        cabinets.add_cabinet(user_id, "ozon", {"client_id": client_id, "api_key": api_key}, display_name="Ozon")
+        cabinets.add_cabinet(user_id, "ozon", {"client_id": client_id, "api_key": api_key}, display_name=display_name)
         await state.clear()
-        await checking.edit_text("Кабинет Ozon подключён ✓")
+        await checking.edit_text(f"Кабинет «{display_name}» (Ozon) подключён ✓")
         await message.answer(_cabinets_text(user_id), reply_markup=_cabinets_kb(user_id, mini_app_url))
 
     return dp
