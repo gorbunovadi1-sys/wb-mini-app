@@ -63,7 +63,7 @@ async def on_startup():
     ai_engine_token = os.environ.get("AI_ENGINE_BOT_TOKEN")
     if ai_engine_token:
         import asyncio
-        from aiogram.types import MenuButtonWebApp, WebAppInfo
+        from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, MenuButtonWebApp, WebAppInfo
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from .ai_engine_bot import build_bot, build_dispatcher
 
@@ -75,6 +75,23 @@ async def on_startup():
             await bot.set_chat_menu_button(
                 menu_button=MenuButtonWebApp(text="Кабинет", web_app=WebAppInfo(url=mini_app_url))
             )
+
+        # Slash-command menu (the "/" popup) — /admin only shows up for the
+        # admin's own chat, everyone else only ever sees /start.
+        await bot.set_my_commands(
+            [BotCommand(command="start", description="Открыть меню")],
+            scope=BotCommandScopeDefault(),
+        )
+        admin_id = os.environ.get("ADMIN_TELEGRAM_ID")
+        if admin_id:
+            await bot.set_my_commands(
+                [
+                    BotCommand(command="start", description="Открыть меню"),
+                    BotCommand(command="admin", description="Пользователи и кабинеты"),
+                ],
+                scope=BotCommandScopeChat(chat_id=int(admin_id)),
+            )
+
         dp = build_dispatcher(mini_app_url)
         asyncio.create_task(dp.start_polling(bot))
         log.info("AI Engine bot polling started")
