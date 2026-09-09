@@ -117,6 +117,13 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .product-bar-fill { height: 100%; border-radius: 3px; background: var(--accent-gradient); }
 .product-bar-fill.neg { background: var(--negative); }
 .product-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono); }
+.copy-chip {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--text-secondary);
+  font-family: var(--font-mono); margin: 4px 0 6px; cursor: pointer; user-select: none;
+}
+.copy-chip::after { content: '⧉'; font-size: 10px; opacity: 0.6; }
+.copy-chip.copied { color: var(--positive); }
+.copy-chip.copied::after { content: '✓'; }
 
 .notice { background: var(--warn-bg); border-radius: 10px; padding: 10px 12px; font-size: 12px; color: var(--warn-text); line-height: 1.4; }
 
@@ -492,6 +499,7 @@ function productCardHtml(p, maxAbsProfit) {
       <div class="product-name">${p.title}</div>
       <div class="product-profit ${neg ? 'neg' : ''}">${fmtMoney(p.profit)}</div>
     </div>
+    <div class="copy-chip" data-copy="${itemKey}">${itemKey}</div>
     <div class="product-bar-track"><div class="product-bar-fill ${neg ? 'neg' : ''}" style="width:${barWidth}%"></div></div>
     <div class="product-meta"><span>выручка ${fmtMoney(p.revenue)} · ${p.qty} шт.</span><span>маржа ${p.margin_percent.toFixed(1)}%</span></div>
     <div class="cogs-row">
@@ -547,24 +555,46 @@ function renderDetail(products) {
   const el = document.getElementById('content');
   el.innerHTML = `
     <input class="search-box" id="detailSearch" placeholder="Поиск по названию или артикулу…">
+    <div class="date-range" style="align-items:center">
+      <div class="field" style="flex:2">
+        <label>Сортировка по прибыли</label>
+        <select id="detailSort" class="cabinet-select" style="padding:8px 10px">
+          <option value="revenue">По выручке</option>
+          <option value="asc">Сначала убыточные</option>
+          <option value="desc">Сначала прибыльные</option>
+        </select>
+      </div>
+      <div class="field" style="flex:1;flex-direction:row;align-items:center;gap:6px;padding-bottom:2px">
+        <input type="checkbox" id="detailOnlyNeg" style="width:16px;height:16px">
+        <label style="margin:0" for="detailOnlyNeg">Только убыточные</label>
+      </div>
+    </div>
     <div class="notice">За период ${lastMarginData.period_from} — ${lastMarginData.period_to} · ${products.length} товаров с продажами</div>
     <div class="product-list" id="detailList"></div>
   `;
-  const renderList = (items) => {
+  const searchEl = document.getElementById('detailSearch');
+  const sortEl = document.getElementById('detailSort');
+  const onlyNegEl = document.getElementById('detailOnlyNeg');
+
+  const renderList = () => {
+    const q = searchEl.value.trim().toLowerCase();
+    let list = q ? products.filter(p =>
+      (p.title || '').toLowerCase().includes(q) || String(p.offer_id || p.nm_id || '').toLowerCase().includes(q)
+    ) : products.slice();
+    if (onlyNegEl.checked) list = list.filter(p => p.profit < 0);
+    if (sortEl.value === 'asc') list = [...list].sort((a, b) => a.profit - b.profit);
+    else if (sortEl.value === 'desc') list = [...list].sort((a, b) => b.profit - a.profit);
+    else list = [...list].sort((a, b) => b.revenue - a.revenue);
+
     const listEl = document.getElementById('detailList');
-    const sorted = [...items].sort((a, b) => b.revenue - a.revenue);
-    const maxAbsProfit = Math.max(...sorted.map(p => Math.abs(p.profit)), 1);
-    listEl.innerHTML = sorted.map(p => productCardHtml(p, maxAbsProfit)).join('') || '<div class="state-msg">Ничего не найдено</div>';
+    const maxAbsProfit = Math.max(...list.map(p => Math.abs(p.profit)), 1);
+    listEl.innerHTML = list.map(p => productCardHtml(p, maxAbsProfit)).join('') || '<div class="state-msg">Ничего не найдено</div>';
     bindCogsHandlers(listEl, loadDetail);
   };
-  renderList(products);
-  document.getElementById('detailSearch').addEventListener('input', (e) => {
-    const q = e.target.value.trim().toLowerCase();
-    const filtered = q ? products.filter(p =>
-      (p.title || '').toLowerCase().includes(q) || String(p.offer_id || p.nm_id || '').toLowerCase().includes(q)
-    ) : products;
-    renderList(filtered);
-  });
+  renderList();
+  searchEl.addEventListener('input', renderList);
+  sortEl.addEventListener('change', renderList);
+  onlyNegEl.addEventListener('change', renderList);
 }
 
 // ==================== Цены ====================
@@ -651,7 +681,7 @@ function priceCardHtml(p) {
   return `<div class="price-card ${staged ? 'staged' : ''}" data-offer="${p.offer_id}"
       data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-old-price="${p.old_price || 0}">
     <div class="p-name">${p.name}</div>
-    <div class="p-offer">${p.offer_id}</div>
+    <div class="p-offer copy-chip" data-copy="${p.offer_id}">${p.offer_id}</div>
     <div class="price-fields">
       <div class="price-field">
         <label>Цена (без акций)</label>
@@ -792,6 +822,24 @@ async function pushPriceUpdates() {
     btn.disabled = false;
   }
 }
+
+document.addEventListener('click', async (e) => {
+  const chip = e.target.closest('.copy-chip');
+  if (!chip) return;
+  const value = chip.dataset.copy;
+  if (!value) return;
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch (err) {
+    const ta = document.createElement('textarea');
+    ta.value = value; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch (e2) {}
+    document.body.removeChild(ta);
+  }
+  chip.classList.add('copied');
+  setTimeout(() => chip.classList.remove('copied'), 1200);
+});
 
 boot();
 </script>
