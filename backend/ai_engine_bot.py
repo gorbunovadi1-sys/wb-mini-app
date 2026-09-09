@@ -107,6 +107,22 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
             reply_markup=_cabinets_kb(user_id, mini_app_url),
         )
 
+    @dp.message(Command("help"))
+    async def admin_help(message: Message):
+        if not _is_admin(message.from_user.id):
+            return
+        await message.answer(
+            "Админ-команды (закрепи это сообщение — зажми и выбери «Закрепить»):\n\n"
+            "/admin — список пользователей, кабинетов и статус доступа\n\n"
+            "/access <id> <дней> — выдать/продлить доступ\n"
+            "  пример: /access 460816761 30\n\n"
+            "/block <id> — заблокировать пользователя\n"
+            "  пример: /block 460816761\n\n"
+            "/unblock <id> — снять блокировку\n"
+            "  пример: /unblock 460816761\n\n"
+            "id пользователя смотри в выводе /admin."
+        )
+
     @dp.message(Command("admin"))
     async def admin_stats(message: Message):
         if not _is_admin(message.from_user.id):
