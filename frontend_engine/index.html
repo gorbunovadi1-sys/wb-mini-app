@@ -558,6 +558,10 @@ async function loadPricing() {
     if (!pricingItems) {
       const data = await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/pricing`);
       pricingItems = data.items;
+      pricingItems.forEach(p => {
+        const price = p.min_price || p.price || 0;
+        p.currentProfit = computePriceRow(price, p.cogs_unit || 0, p.commission_pct, p.logistics_estimate).profit;
+      });
     }
     renderPricing(pricingItems);
   } catch (e) {
@@ -582,19 +586,41 @@ function renderPricing(items) {
   const el = document.getElementById('content');
   el.innerHTML = `
     <input class="search-box" id="pricingSearch" placeholder="Поиск по названию или артикулу…">
+    <div class="date-range" style="align-items:center">
+      <div class="field" style="flex:2">
+        <label>Сортировка по прибыли</label>
+        <select id="pricingSort" class="cabinet-select" style="padding:8px 10px">
+          <option value="none">Без сортировки</option>
+          <option value="asc">Сначала убыточные</option>
+          <option value="desc">Сначала прибыльные</option>
+        </select>
+      </div>
+      <div class="field" style="flex:1;flex-direction:row;align-items:center;gap:6px;padding-bottom:2px">
+        <input type="checkbox" id="pricingOnlyNeg" style="width:16px;height:16px">
+        <label style="margin:0" for="pricingOnlyNeg">Только убыточные</label>
+      </div>
+    </div>
     <div class="product-list" id="pricingList"></div>
   `;
-  const renderList = (list) => {
+  const searchEl = document.getElementById('pricingSearch');
+  const sortEl = document.getElementById('pricingSort');
+  const onlyNegEl = document.getElementById('pricingOnlyNeg');
+
+  const renderList = () => {
+    const q = searchEl.value.trim().toLowerCase();
+    let list = q ? items.filter(i => (i.name||'').toLowerCase().includes(q) || (i.offer_id||'').toLowerCase().includes(q)) : items.slice();
+    if (onlyNegEl.checked) list = list.filter(i => i.currentProfit < 0);
+    if (sortEl.value === 'asc') list = [...list].sort((a, b) => a.currentProfit - b.currentProfit);
+    else if (sortEl.value === 'desc') list = [...list].sort((a, b) => b.currentProfit - a.currentProfit);
+
     const listEl = document.getElementById('pricingList');
     listEl.innerHTML = list.slice(0, 200).map(priceCardHtml).join('') || '<div class="state-msg">Ничего не найдено</div>';
     listEl.querySelectorAll('.price-card').forEach(bindPriceCard);
   };
-  renderList(items);
-  document.getElementById('pricingSearch').addEventListener('input', (e) => {
-    const q = e.target.value.trim().toLowerCase();
-    const filtered = q ? items.filter(i => (i.name||'').toLowerCase().includes(q) || (i.offer_id||'').toLowerCase().includes(q)) : items;
-    renderList(filtered);
-  });
+  renderList();
+  searchEl.addEventListener('input', renderList);
+  sortEl.addEventListener('change', renderList);
+  onlyNegEl.addEventListener('change', renderList);
 }
 
 function priceCardHtml(p) {
@@ -710,16 +736,26 @@ async function pushPriceUpdates() {
   if (!updates.length) return;
   btn.disabled = true; btn.textContent = 'Отправляю…';
   try {
-    await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/prices`, {
+    const resp = await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/prices`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ updates }),
     });
+    const results = resp.results || [];
+    const failed = results.filter(r => r.updated === false);
     pendingPriceChanges = {};
     pricingItems = null;
     updatePushBar();
     btn.textContent = 'Отправить обновления';
     btn.disabled = false;
+    if (failed.length) {
+      const lines = failed.map(f => `${f.offer_id}: ${(f.errors || []).map(e => e.message || JSON.stringify(e)).join('; ') || 'отклонено Ozon без причины'}`);
+      alert(`Ozon отклонил ${failed.length} из ${results.length} обновлений:\n\n${lines.join('\n')}`);
+    } else if (!results.length) {
+      alert('Ozon не прислал подтверждение по товарам — проверь цены вручную, возможно обновление не применилось.');
+    } else {
+      alert(`Ozon подтвердил обновление ${results.length} товар(ов).`);
+    }
     loadPricing();
   } catch (e) {
     alert('Не удалось отправить обновления в Ozon: ' + e.message);
