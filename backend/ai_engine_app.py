@@ -95,15 +95,41 @@ def get_cabinet_margin(
     user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
     cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
     client = _build_client(cabinet)
+    cost_prices = cabinets.get_cost_prices(cabinet_id)
     try:
-        # cost_prices={} until per-cabinet cost prices are wired up — profit
-        # will show as 0 COGS (flagged "без себестоимости") until then.
         if cabinet["marketplace"] == "wb":
-            return margin.build_margin_summary(client=client, cost_prices={})
-        return ozon_margin.build_margin_summary(client=client, cost_prices={})
+            return margin.build_margin_summary(client=client, cost_prices=cost_prices)
+        return ozon_margin.build_margin_summary(client=client, cost_prices=cost_prices)
     except Exception as e:
         log.exception(f"Failed to build margin for cabinet {cabinet_id}")
         raise HTTPException(status_code=502, detail=f"upstream marketplace API error: {e}")
+
+
+@app.get("/api/cabinets/{cabinet_id}/cost-prices")
+def get_cabinet_cost_prices(
+    cabinet_id: int,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+):
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    _owned_cabinet_or_404(cabinet_id, user_id)
+    return cabinets.get_cost_prices(cabinet_id)
+
+
+@app.post("/api/cabinets/{cabinet_id}/cost-prices")
+def set_cabinet_cost_prices(
+    cabinet_id: int,
+    body: dict,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+):
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    _owned_cabinet_or_404(cabinet_id, user_id)
+    prices = body.get("prices", {})
+    if not prices:
+        raise HTTPException(status_code=400, detail="prices dict is empty")
+    cabinets.set_cost_prices(cabinet_id, prices)
+    return {"status": "saved"}
 
 
 @app.get("/api/cabinets/{cabinet_id}/ozon/prices")

@@ -64,6 +64,19 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .product-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono); }
 
 .notice { background: var(--warn-bg); border-radius: 10px; padding: 10px 12px; font-size: 12px; color: var(--warn-text); line-height: 1.4; }
+
+.cogs-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.cogs-row label { font-size: 10.5px; color: var(--text-secondary); flex: none; }
+.cogs-row input {
+  flex: 1; min-width: 0; box-sizing: border-box; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 7px; padding: 5px 8px; font-family: var(--font-mono); font-size: 12px; color: var(--text);
+}
+.cogs-row button {
+  flex: none; border: none; background: var(--accent); color: var(--accent-text-on);
+  font-family: var(--font); font-size: 11px; font-weight: 600; padding: 6px 10px; border-radius: 7px; cursor: pointer;
+}
+.cogs-row button:disabled { opacity: 0.5; }
+.cogs-row button.saved { background: #7cff00; }
 .state-msg { text-align: center; padding: 60px 20px; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
 .state-msg b { color: var(--text); }
 </style>
@@ -95,8 +108,10 @@ function authQS() {
   return id ? `?telegram_id=${id}` : '';
 }
 
-async function apiFetch(path) {
-  const res = await fetch(path + authQS(), { headers: { 'X-Telegram-Init-Data': initData() } });
+async function apiFetch(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({ 'X-Telegram-Init-Data': initData() }, opts.headers || {});
+  const res = await fetch(path + authQS(), opts);
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
 }
@@ -186,13 +201,19 @@ function renderDashboard(data, cabinet) {
   const productsHtml = sortedProducts.map(p => {
     const neg = p.profit < 0;
     const barWidth = Math.max(4, Math.abs(p.profit) / maxAbsProfit * 100);
-    return `<div class="product-card">
+    const itemKey = p.offer_id !== undefined && p.offer_id !== null ? p.offer_id : p.nm_id;
+    return `<div class="product-card" data-item="${itemKey}">
       <div class="product-top">
         <div class="product-name">${p.title}</div>
         <div class="product-profit ${neg ? 'neg' : ''}">${fmtMoney(p.profit)}</div>
       </div>
       <div class="product-bar-track"><div class="product-bar-fill ${neg ? 'neg' : ''}" style="width:${barWidth}%"></div></div>
       <div class="product-meta"><span>выручка ${fmtMoney(p.revenue)} · ${p.qty} шт.</span><span>маржа ${p.margin_percent.toFixed(1)}%</span></div>
+      <div class="cogs-row">
+        <label>Закупка/шт.</label>
+        <input type="number" class="cogs-input" value="${p.cogs_unit || ''}" placeholder="0">
+        <button class="cogs-save">Сохранить</button>
+      </div>
     </div>`;
   }).join('') || '<div class="state-msg">Нет данных за период</div>';
 
@@ -217,6 +238,29 @@ function renderDashboard(data, cabinet) {
       <div class="product-list">${productsHtml}</div>
     </div>
   `;
+
+  el.querySelectorAll('.product-card').forEach(card => {
+    card.querySelector('.cogs-save').addEventListener('click', async () => {
+      const btn = card.querySelector('.cogs-save');
+      const input = card.querySelector('.cogs-input');
+      const itemKey = card.dataset.item;
+      const value = parseFloat(input.value);
+      if (!value || value < 0) { alert('Укажи закупочную цену за штуку'); return; }
+      btn.disabled = true; btn.textContent = 'Сохранение…';
+      try {
+        await apiFetch(`/api/cabinets/${activeCabinetId}/cost-prices`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prices: { [itemKey]: value } }),
+        });
+        btn.textContent = 'Сохранено ✓'; btn.classList.add('saved');
+        setTimeout(() => loadDashboard(activeCabinetId), 900);
+      } catch (e) {
+        btn.textContent = 'Ошибка'; btn.disabled = false;
+        alert('Не удалось сохранить: ' + e.message);
+      }
+    });
+  });
 
   if (daily.length) {
     new Chart(document.getElementById('revenueChart'), {

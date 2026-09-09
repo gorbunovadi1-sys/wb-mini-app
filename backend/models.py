@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 
 from .db import Base
@@ -35,3 +35,16 @@ class Cabinet(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     user = relationship("User", back_populates="cabinets")
+
+
+class CostPrice(Base):
+    """Per-cabinet cost price, keyed by the marketplace's own item id —
+    offer_id for Ozon, str(nm_id) for WB."""
+    __tablename__ = "cost_prices"
+    __table_args__ = (UniqueConstraint("cabinet_id", "item_key", name="uq_cost_price_cabinet_item"),)
+
+    id = Column(Integer, primary_key=True)
+    cabinet_id = Column(Integer, ForeignKey("cabinets.id"), nullable=False, index=True)
+    item_key = Column(String, nullable=False)
+    cost_price = Column(Float, nullable=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)

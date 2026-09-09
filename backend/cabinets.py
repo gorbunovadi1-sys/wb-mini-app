@@ -1,8 +1,9 @@
+import datetime
 import json
 
 from .crypto import decrypt, encrypt
 from .db import SessionLocal
-from .models import Cabinet, User
+from .models import Cabinet, CostPrice, User
 
 
 def get_or_create_user(telegram_user_id: int, first_name: str = None, username: str = None) -> int:
@@ -75,3 +76,27 @@ def deactivate_cabinet(cabinet_id: int, user_id: int) -> bool:
         cabinet.is_active = False
         session.commit()
         return True
+
+
+def get_cost_prices(cabinet_id: int) -> dict:
+    """offer_id (Ozon) / str(nm_id) (WB) -> cost price in RUB."""
+    with SessionLocal() as session:
+        rows = session.query(CostPrice).filter_by(cabinet_id=cabinet_id).all()
+        return {r.item_key: r.cost_price for r in rows}
+
+
+def set_cost_prices(cabinet_id: int, prices: dict):
+    """Upserts a batch of {item_key: cost_price} for one cabinet."""
+    with SessionLocal() as session:
+        existing = {
+            r.item_key: r for r in session.query(CostPrice).filter_by(cabinet_id=cabinet_id).all()
+        }
+        for item_key, price in prices.items():
+            item_key = str(item_key)
+            row = existing.get(item_key)
+            if row:
+                row.cost_price = price
+                row.updated_at = datetime.datetime.utcnow()
+            else:
+                session.add(CostPrice(cabinet_id=cabinet_id, item_key=item_key, cost_price=price))
+        session.commit()
