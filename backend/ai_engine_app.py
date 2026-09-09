@@ -37,9 +37,18 @@ async def on_startup():
     ai_engine_token = os.environ.get("AI_ENGINE_BOT_TOKEN")
     if ai_engine_token:
         import asyncio
+        from aiogram.types import MenuButtonWebApp, WebAppInfo
         from .ai_engine_bot import build_bot, build_dispatcher
+
+        mini_app_url = os.environ.get("AI_ENGINE_MINI_APP_URL")
         bot = build_bot(ai_engine_token)
-        dp = build_dispatcher(os.environ.get("AI_ENGINE_MINI_APP_URL"))
+        if mini_app_url:
+            # Pins a persistent Web App button in the message input bar (next
+            # to the attachment icon) so it doesn't get buried by chat history.
+            await bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="Кабинет", web_app=WebAppInfo(url=mini_app_url))
+            )
+        dp = build_dispatcher(mini_app_url)
         asyncio.create_task(dp.start_polling(bot))
         log.info("AI Engine bot polling started")
     else:
