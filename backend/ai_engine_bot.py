@@ -85,7 +85,7 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
         await state.set_state(Onboarding.entering_ozon_client_id)
         await callback.message.answer(
             "Пришли Client-Id кабинета Ozon (Настройки → Seller API в личном кабинете Ozon) — "
-            "это короткое число, например 1702727."
+            "это короткое число, например 1234567."
         )
         await callback.answer()
 
@@ -132,7 +132,7 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
             return
         await state.update_data(ozon_client_id=client_id)
         await state.set_state(Onboarding.entering_ozon_api_key)
-        await message.answer("Теперь пришли Api-Key Ozon (там же, в Seller API) — строка вида 747342b7-1b13-....")
+        await message.answer("Теперь пришли Api-Key Ozon (там же, в Seller API) — строка вида a1b2c3d4-5678-90ab-cdef-1234567890ab.")
 
     @dp.message(Onboarding.entering_ozon_api_key)
     async def receive_ozon_api_key(message: Message, state: FSMContext):
