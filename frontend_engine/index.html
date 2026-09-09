@@ -247,7 +247,11 @@ async function apiFetch(path, opts) {
   opts = opts || {};
   opts.headers = Object.assign({ 'X-Telegram-Init-Data': initData() }, opts.headers || {});
   const res = await fetch(withAuthQS(path), opts);
-  if (!res.ok) throw new Error('HTTP ' + res.status);
+  if (!res.ok) {
+    let detail = 'HTTP ' + res.status;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
   return res.json();
 }
 

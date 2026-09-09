@@ -6,12 +6,12 @@ from dotenv import load_dotenv
 load_dotenv()  # must run before importing modules below that read env vars at import time
 
 import requests
-from aiogram import Bot, Dispatcher, F
+from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, TelegramObject, WebAppInfo
 
 from . import cabinets
 from . import cost_price_import
@@ -21,6 +21,35 @@ from .wb_client import WBClient
 log = logging.getLogger("ai_engine_bot")
 
 MARKETPLACE_LABELS = {"wb": "Wildberries", "ozon": "Ozon"}
+
+
+def _is_admin(user_id: int) -> bool:
+    admin_id = os.environ.get("ADMIN_TELEGRAM_ID")
+    return bool(admin_id) and user_id == int(admin_id)
+
+
+class AccessControlMiddleware(BaseMiddleware):
+    """Blocks every update from a blocked or expired-subscription user before
+    it reaches any handler — the admin is always exempt. Central enforcement
+    point so individual handlers don't each need their own check."""
+
+    async def __call__(self, handler, event: TelegramObject, data: dict):
+        user = data.get("event_from_user")
+        if user and not _is_admin(user.id):
+            try:
+                cabinets.check_access(user.id)
+            except cabinets.AccessDenied as e:
+                text = (
+                    "🚫 Доступ приостановлен. Обратитесь к администратору."
+                    if e.reason == "blocked"
+                    else "⏳ Срок подписки истёк. Обратитесь к администратору, чтобы продлить доступ."
+                )
+                if isinstance(event, CallbackQuery):
+                    await event.answer(text, show_alert=True)
+                elif isinstance(event, Message):
+                    await event.answer(text)
+                return
+        return await handler(event, data)
 
 
 class Onboarding(StatesGroup):
@@ -64,6 +93,8 @@ def _cabinets_text(user_id: int) -> str:
 
 def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
     dp = Dispatcher(storage=MemoryStorage())
+    dp.message.outer_middleware(AccessControlMiddleware())
+    dp.callback_query.outer_middleware(AccessControlMiddleware())
 
     @dp.message(CommandStart())
     async def start(message: Message, state: FSMContext):
@@ -78,22 +109,61 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
 
     @dp.message(Command("admin"))
     async def admin_stats(message: Message):
-        admin_id = os.environ.get("ADMIN_TELEGRAM_ID")
-        if not admin_id or message.from_user.id != int(admin_id):
+        if not _is_admin(message.from_user.id):
             return  # silently ignore — don't reveal the command exists to non-admins
         stats = cabinets.get_admin_stats()
         lines = [f"Пользователей: {stats['total_users']}\n"]
         for u in stats["users"]:
             name = u["username"] and f"@{u['username']}" or (u["first_name"] or "без имени")
+            if u["is_blocked"]:
+                access = "🚫 заблокирован"
+            elif u["access_until"]:
+                access = f"до {u['access_until'].strftime('%d.%m.%Y')}"
+            else:
+                access = "безлимит"
+            header = f"👤 {name} (id {u['telegram_user_id']}) — {access}"
             if not u["cabinets"]:
-                lines.append(f"👤 {name} (id {u['telegram_user_id']}) — кабинетов нет")
+                lines.append(f"{header}, кабинетов нет")
                 continue
-            lines.append(f"👤 {name} (id {u['telegram_user_id']})")
+            lines.append(header)
             for c in u["cabinets"]:
                 label = c["display_name"] or MARKETPLACE_LABELS.get(c["marketplace"], c["marketplace"])
                 synced = c["last_synced_at"].strftime("%d.%m %H:%M") if c["last_synced_at"] else "—"
                 lines.append(f"   • {label} ({MARKETPLACE_LABELS.get(c['marketplace'], c['marketplace'])}), синк: {synced}")
         await message.answer("\n".join(lines))
+
+    @dp.message(Command("block"))
+    async def block_cmd(message: Message):
+        if not _is_admin(message.from_user.id):
+            return
+        parts = message.text.split()
+        if len(parts) != 2 or not parts[1].lstrip("-").isdigit():
+            await message.answer("Использование: /block <telegram_id>")
+            return
+        ok = cabinets.set_blocked(int(parts[1]), True)
+        await message.answer("🚫 Заблокирован." if ok else "Пользователь не найден.")
+
+    @dp.message(Command("unblock"))
+    async def unblock_cmd(message: Message):
+        if not _is_admin(message.from_user.id):
+            return
+        parts = message.text.split()
+        if len(parts) != 2 or not parts[1].lstrip("-").isdigit():
+            await message.answer("Использование: /unblock <telegram_id>")
+            return
+        ok = cabinets.set_blocked(int(parts[1]), False)
+        await message.answer("✓ Разблокирован." if ok else "Пользователь не найден.")
+
+    @dp.message(Command("access"))
+    async def access_cmd(message: Message):
+        if not _is_admin(message.from_user.id):
+            return
+        parts = message.text.split()
+        if len(parts) != 3 or not parts[1].lstrip("-").isdigit() or not parts[2].lstrip("-").isdigit():
+            await message.answer("Использование: /access <telegram_id> <дней>")
+            return
+        ok = cabinets.grant_access_days(int(parts[1]), int(parts[2]))
+        await message.answer(f"✓ Доступ продлён на {parts[2]} дн." if ok else "Пользователь не найден.")
 
     @dp.callback_query(F.data == "connect_wb")
     async def connect_wb(callback: CallbackQuery, state: FSMContext):

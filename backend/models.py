@@ -14,6 +14,9 @@ class User(Base):
     first_name = Column(String, nullable=True)
     username = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    is_blocked = Column(Boolean, default=False, nullable=False)
+    # NULL = unlimited access (default for everyone until explicitly time-limited).
+    access_until = Column(DateTime, nullable=True)
 
     cabinets = relationship("Cabinet", back_populates="user", cascade="all, delete-orphan")
 

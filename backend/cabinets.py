@@ -6,6 +6,13 @@ from .db import SessionLocal
 from .models import Cabinet, CostPrice, User
 
 
+class AccessDenied(Exception):
+    """Raised when a Telegram user is blocked or their timed access expired."""
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
 def get_or_create_user(telegram_user_id: int, first_name: str = None, username: str = None) -> int:
     with SessionLocal() as session:
         user = session.query(User).filter_by(telegram_user_id=telegram_user_id).first()
@@ -79,11 +86,19 @@ def deactivate_cabinet(cabinet_id: int, user_id: int) -> bool:
 
 
 def list_all_active_cabinets(marketplace: str = None) -> list:
-    """Every active cabinet across all users, with decrypted credentials and
-    the owner's Telegram id — used by background jobs (e.g. price monitoring),
-    not exposed via any user-scoped API route."""
+    """Every active cabinet belonging to a user with current access (not
+    blocked, not expired), with decrypted credentials and the owner's
+    Telegram id — used by background jobs (e.g. price monitoring), not
+    exposed via any user-scoped API route."""
+    now = datetime.datetime.utcnow()
     with SessionLocal() as session:
-        query = session.query(Cabinet, User).join(User, Cabinet.user_id == User.id).filter(Cabinet.is_active.is_(True))
+        query = (
+            session.query(Cabinet, User)
+            .join(User, Cabinet.user_id == User.id)
+            .filter(Cabinet.is_active.is_(True))
+            .filter(User.is_blocked.is_(False))
+            .filter((User.access_until.is_(None)) | (User.access_until >= now))
+        )
         if marketplace:
             query = query.filter(Cabinet.marketplace == marketplace)
         rows = query.all()
@@ -110,12 +125,53 @@ def get_admin_stats() -> dict:
                 "first_name": u.first_name,
                 "username": u.username,
                 "created_at": u.created_at,
+                "is_blocked": u.is_blocked,
+                "access_until": u.access_until,
                 "cabinets": [
                     {"marketplace": c.marketplace, "display_name": c.display_name, "last_synced_at": c.last_synced_at}
                     for c in cabs
                 ],
             })
         return {"total_users": len(users), "users": result}
+
+
+def check_access(telegram_user_id: int):
+    """Raises AccessDenied if this user is blocked or their timed access has
+    expired. No matching row (new user) or access_until=None both mean
+    unrestricted — access is opt-out (block/limit), not opt-in."""
+    with SessionLocal() as session:
+        user = session.query(User).filter_by(telegram_user_id=telegram_user_id).first()
+        if not user:
+            return
+        if user.is_blocked:
+            raise AccessDenied("blocked")
+        if user.access_until and user.access_until < datetime.datetime.utcnow():
+            raise AccessDenied("expired")
+
+
+def set_blocked(telegram_user_id: int, blocked: bool) -> bool:
+    with SessionLocal() as session:
+        user = session.query(User).filter_by(telegram_user_id=telegram_user_id).first()
+        if not user:
+            return False
+        user.is_blocked = blocked
+        session.commit()
+        return True
+
+
+def grant_access_days(telegram_user_id: int, days: int) -> bool:
+    """Sets access_until to `days` from now (extends from an already-future
+    expiry rather than from now, so repeated top-ups stack)."""
+    with SessionLocal() as session:
+        user = session.query(User).filter_by(telegram_user_id=telegram_user_id).first()
+        if not user:
+            return False
+        now = datetime.datetime.utcnow()
+        base = user.access_until if (user.access_until and user.access_until > now) else now
+        user.access_until = base + datetime.timedelta(days=days)
+        user.is_blocked = False
+        session.commit()
+        return True
 
 
 def get_cost_prices(cabinet_id: int) -> dict:

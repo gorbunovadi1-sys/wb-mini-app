@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from typing import Optional
@@ -32,28 +33,39 @@ app = FastAPI(title="ИИ Движок API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+async def _check_one_cabinet(cabinet: dict, bot, semaphore: "asyncio.Semaphore"):
+    async with semaphore:
+        try:
+            # check_cabinet makes blocking HTTP calls to Ozon — run it off the
+            # event loop so one slow/hanging cabinet can't stall the bot or API
+            # for everyone else (matters once this scales past a handful of cabinets).
+            new_negative = await asyncio.to_thread(ozon_price_monitor.check_cabinet, cabinet)
+        except Exception:
+            log.exception(f"Price check failed for cabinet {cabinet['id']}")
+            return
+    if not new_negative:
+        return
+    lines = [f"• {n['name']} ({n['offer_id']}): {n['profit']} ₽" for n in new_negative]
+    text = (
+        f"⚠️ В кабинете «{cabinet['display_name'] or cabinet['id']}» "
+        f"{len(new_negative)} товар(ов) стали убыточными:\n\n" + "\n".join(lines)
+    )
+    try:
+        await bot.send_message(cabinet["telegram_user_id"], text)
+    except Exception:
+        log.exception(f"Failed to notify user for cabinet {cabinet['id']}")
+
+
 async def _run_price_checks(bot):
     """Runs every 10 minutes: checks all active Ozon cabinets' prices and
     notifies each owner about products that newly became loss-making since
     the last check (ozon_price_monitor keeps a per-cabinet snapshot so
-    already-known problem items aren't re-reported every cycle)."""
-    for cabinet in cabinets.list_all_active_cabinets(marketplace="ozon"):
-        try:
-            new_negative = ozon_price_monitor.check_cabinet(cabinet)
-        except Exception:
-            log.exception(f"Price check failed for cabinet {cabinet['id']}")
-            continue
-        if not new_negative:
-            continue
-        lines = [f"• {n['name']} ({n['offer_id']}): {n['profit']} ₽" for n in new_negative]
-        text = (
-            f"⚠️ В кабинете «{cabinet['display_name'] or cabinet['id']}» "
-            f"{len(new_negative)} товар(ов) стали убыточными:\n\n" + "\n".join(lines)
-        )
-        try:
-            await bot.send_message(cabinet["telegram_user_id"], text)
-        except Exception:
-            log.exception(f"Failed to notify user for cabinet {cabinet['id']}")
+    already-known problem items aren't re-reported every cycle). Cabinets are
+    checked concurrently (capped at 5 in flight) instead of one at a time so
+    the total run time doesn't grow linearly with the number of cabinets."""
+    cabs = cabinets.list_all_active_cabinets(marketplace="ozon")
+    semaphore = asyncio.Semaphore(5)
+    await asyncio.gather(*[_check_one_cabinet(c, bot, semaphore) for c in cabs])
 
 
 @app.on_event("startup")
@@ -62,7 +74,6 @@ async def on_startup():
 
     ai_engine_token = os.environ.get("AI_ENGINE_BOT_TOKEN")
     if ai_engine_token:
-        import asyncio
         from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, MenuButtonWebApp, WebAppInfo
         from apscheduler.schedulers.asyncio import AsyncIOScheduler
         from .ai_engine_bot import build_bot, build_dispatcher
@@ -88,6 +99,9 @@ async def on_startup():
                 [
                     BotCommand(command="start", description="Открыть меню"),
                     BotCommand(command="admin", description="Пользователи и кабинеты"),
+                    BotCommand(command="access", description="Выдать доступ: /access id дней"),
+                    BotCommand(command="block", description="Заблокировать: /block id"),
+                    BotCommand(command="unblock", description="Разблокировать: /unblock id"),
                 ],
                 scope=BotCommandScopeChat(chat_id=int(admin_id)),
             )
@@ -109,19 +123,31 @@ async def on_startup():
 def _resolve_user_id(x_telegram_init_data: Optional[str], telegram_id: Optional[int]) -> int:
     """Resolves the caller's internal user_id. In production, trusts Telegram's
     signed initData. In DEV_MODE, accepts a ?telegram_id= query param instead,
-    since there's no real Telegram context when testing the API directly."""
+    since there's no real Telegram context when testing the API directly.
+    Blocked or expired-subscription users are rejected here — this is the
+    single choke point every data route goes through via Depends/direct call."""
     if DEV_MODE:
         if telegram_id is None:
             raise HTTPException(status_code=400, detail="DEV_MODE: pass ?telegram_id=<your Telegram id>")
-        return cabinets.get_or_create_user(telegram_id)
+        tg_id = telegram_id
+    else:
+        ai_bot_token = os.environ.get("AI_ENGINE_BOT_TOKEN")
+        if not x_telegram_init_data or not validate_init_data(x_telegram_init_data, bot_token=ai_bot_token):
+            raise HTTPException(status_code=401, detail="invalid Telegram init data")
+        tg_user = parse_init_data_user(x_telegram_init_data)
+        if not tg_user.get("id"):
+            raise HTTPException(status_code=401, detail="no user in init data")
+        tg_id = tg_user["id"]
 
-    ai_bot_token = os.environ.get("AI_ENGINE_BOT_TOKEN")
-    if not x_telegram_init_data or not validate_init_data(x_telegram_init_data, bot_token=ai_bot_token):
-        raise HTTPException(status_code=401, detail="invalid Telegram init data")
-    tg_user = parse_init_data_user(x_telegram_init_data)
-    if not tg_user.get("id"):
-        raise HTTPException(status_code=401, detail="no user in init data")
-    return cabinets.get_or_create_user(tg_user["id"], tg_user.get("first_name"), tg_user.get("username"))
+    try:
+        cabinets.check_access(tg_id)
+    except cabinets.AccessDenied as e:
+        detail = "Доступ заблокирован" if e.reason == "blocked" else "Срок подписки истёк"
+        raise HTTPException(status_code=403, detail=detail)
+
+    if DEV_MODE:
+        return cabinets.get_or_create_user(tg_id)
+    return cabinets.get_or_create_user(tg_id, tg_user.get("first_name"), tg_user.get("username"))
 
 
 def _build_client(cabinet: dict):

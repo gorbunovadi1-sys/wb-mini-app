@@ -23,3 +23,24 @@ Base = declarative_base()
 def init_db():
     from . import models  # noqa: F401 — registers models on Base before create_all
     Base.metadata.create_all(bind=engine)
+    _migrate()
+
+
+def _migrate():
+    """create_all() only adds missing tables, not missing columns on tables
+    that already exist in production — so new columns need an explicit,
+    idempotent ALTER here. Each statement is wrapped individually so an
+    "already exists" failure on one doesn't block the rest."""
+    from sqlalchemy import text
+    bool_default = "0" if engine.dialect.name == "sqlite" else "false"
+    statements = [
+        f"ALTER TABLE users ADD COLUMN is_blocked BOOLEAN NOT NULL DEFAULT {bool_default}",
+        "ALTER TABLE users ADD COLUMN access_until TIMESTAMP",
+    ]
+    with engine.connect() as conn:
+        for stmt in statements:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+            except Exception:
+                conn.rollback()  # column already exists
