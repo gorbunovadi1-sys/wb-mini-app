@@ -10,9 +10,10 @@ from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
 
 from . import cabinets
+from . import cost_price_import
 from .ozon_client import OzonClient
 from .wb_client import WBClient
 
@@ -25,6 +26,7 @@ class Onboarding(StatesGroup):
     entering_wb_key = State()
     entering_ozon_client_id = State()
     entering_ozon_api_key = State()
+    awaiting_cost_prices_file = State()
 
 
 def build_bot(token: str) -> Bot:
@@ -33,8 +35,11 @@ def build_bot(token: str) -> Bot:
 
 def _cabinets_kb(user_id: int, mini_app_url: str = None) -> InlineKeyboardMarkup:
     rows = []
-    if mini_app_url and cabinets.list_cabinets(user_id):
+    my = cabinets.list_cabinets(user_id)
+    if mini_app_url and my:
         rows.append([InlineKeyboardButton(text="📊 Открыть кабинет", web_app=WebAppInfo(url=mini_app_url))])
+    if my:
+        rows.append([InlineKeyboardButton(text="💰 Внести себестоимость", callback_data="cost_prices_menu")])
     rows.append([InlineKeyboardButton(text="+ Подключить Wildberries", callback_data="connect_wb")])
     rows.append([InlineKeyboardButton(text="+ Подключить Ozon", callback_data="connect_ozon")])
     for c in cabinets.list_cabinets(user_id):
@@ -164,6 +169,75 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
         await state.clear()
         await checking.edit_text(f"Кабинет «{display_name}» (Ozon) подключён ✓")
         await message.answer(_cabinets_text(user_id), reply_markup=_cabinets_kb(user_id, mini_app_url))
+
+    @dp.callback_query(F.data == "cost_prices_menu")
+    async def cost_prices_menu(callback: CallbackQuery):
+        user_id = cabinets.get_or_create_user(callback.from_user.id)
+        my = cabinets.list_cabinets(user_id)
+        rows = [
+            [InlineKeyboardButton(
+                text=f"{c['display_name'] or MARKETPLACE_LABELS.get(c['marketplace'], c['marketplace'])} ({MARKETPLACE_LABELS.get(c['marketplace'], c['marketplace'])})",
+                callback_data=f"costtpl_{c['id']}",
+            )]
+            for c in my
+        ]
+        await callback.message.answer(
+            "Выбери кабинет — пришлю Excel-шаблон со всеми товарами:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+        )
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("costtpl_"))
+    async def send_cost_template(callback: CallbackQuery, state: FSMContext):
+        cabinet_id = int(callback.data.split("_", 1)[1])
+        user_id = cabinets.get_or_create_user(callback.from_user.id)
+        cabinet = cabinets.get_cabinet(cabinet_id)
+        await callback.answer()
+        if not cabinet or cabinet["user_id"] != user_id:
+            await callback.message.answer("Кабинет не найден.")
+            return
+
+        generating = await callback.message.answer("Собираю шаблон, это может занять минуту…")
+        try:
+            xlsx_bytes = await asyncio.to_thread(cost_price_import.build_template, cabinet)
+        except Exception as e:
+            log.exception(f"Failed to build cost-price template for cabinet {cabinet_id}")
+            await generating.edit_text(f"Не получилось собрать шаблон: {e}")
+            return
+
+        await state.set_state(Onboarding.awaiting_cost_prices_file)
+        await state.update_data(cost_prices_cabinet_id=cabinet_id)
+        await generating.edit_text(
+            "Готово — заполни колонку «Себестоимость за шт (руб)» и пришли файл обратно в этот чат (как документ)."
+        )
+        label = cabinet["display_name"] or MARKETPLACE_LABELS.get(cabinet["marketplace"], cabinet["marketplace"])
+        file = BufferedInputFile(xlsx_bytes, filename=f"sebestoimost_{label}.xlsx")
+        await callback.message.answer_document(file)
+
+    @dp.message(Onboarding.awaiting_cost_prices_file, F.document)
+    async def receive_cost_prices_file(message: Message, state: FSMContext):
+        data = await state.get_data()
+        cabinet_id = data.get("cost_prices_cabinet_id")
+        if not cabinet_id:
+            await message.answer("Не понимаю, для какого кабинета этот файл — начни заново через «Внести себестоимость».")
+            await state.clear()
+            return
+
+        file_info = await message.bot.get_file(message.document.file_id)
+        file_io = await message.bot.download_file(file_info.file_path)
+        try:
+            prices = cost_price_import.parse_template(file_io.read())
+        except Exception as e:
+            await message.answer(f"Не смогла прочитать файл — пришли именно тот .xlsx, что я присылала.\n{e}")
+            return
+
+        if not prices:
+            await message.answer("Не нашла заполненных строк с себестоимостью — проверь файл и пришли снова.")
+            return
+
+        cabinets.set_cost_prices(cabinet_id, prices)
+        await state.clear()
+        await message.answer(f"Обновила себестоимость для {len(prices)} товаров ✓")
 
     return dp
 

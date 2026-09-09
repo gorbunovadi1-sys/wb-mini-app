@@ -10,31 +10,51 @@ from .ozon_cost_prices import load_cost_prices
 log = logging.getLogger("ozon_margin")
 
 EXCLUDED_STATUSES = {"cancelled"}
+# "delivered" is the only status that reliably means the customer actually
+# kept the item within this window — the seller's real "выкуп". Everything
+# else non-cancelled (in transit, awaiting packaging/delivery) is a placed
+# "заказ" that hasn't resolved into a kept purchase yet.
+BUYOUT_STATUSES = {"delivered"}
 
 
 def _prev_month(year, month):
     return (year - 1, 12) if month == 1 else (year, month - 1)
 
 
-def _daily_revenue(postings):
-    """Approximate daily revenue/qty assembled from FBS+FBO postings — Ozon has no
-    single report with daily rows (like WB's), so this is built here (per-order
-    price × quantity) purely for the trend chart. Excludes cancelled postings."""
+def _summarize_postings(postings):
+    """Builds, from FBS+FBO postings over the selected period: a daily revenue
+    series (for the chart), 'orders' (everything placed minus outright
+    cancellations), and 'buyouts' (only postings that reached status=delivered
+    — the subset of orders actually kept by the customer)."""
     daily = collections.defaultdict(lambda: {"revenue": 0.0, "qty": 0})
+    orders = {"revenue": 0.0, "qty": 0}
+    buyouts = {"revenue": 0.0, "qty": 0}
+
     for posting in postings:
-        if posting.get("status") in EXCLUDED_STATUSES:
+        status = posting.get("status")
+        if status in EXCLUDED_STATUSES:
             continue
         ts = posting.get("in_process_at") or posting.get("created_at") or ""
         date_str = ts[:10]
-        if not date_str:
-            continue
+        is_buyout = status in BUYOUT_STATUSES
+
         for prod in posting.get("products", []):
             qty = prod.get("quantity") or 0
             price = float(prod.get("price") or 0)
-            d = daily[date_str]
-            d["revenue"] += price * qty
-            d["qty"] += qty
-    return daily
+            revenue = price * qty
+
+            orders["revenue"] += revenue
+            orders["qty"] += qty
+            if is_buyout:
+                buyouts["revenue"] += revenue
+                buyouts["qty"] += qty
+
+            if date_str:
+                d = daily[date_str]
+                d["revenue"] += revenue
+                d["qty"] += qty
+
+    return daily, orders, buyouts
 
 
 def _fetch_report_safe(client, year, month):
@@ -113,13 +133,14 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
     fetch_from = date_to - datetime.timedelta(days=days)
     iso_from = f"{fetch_from.isoformat()}T00:00:00Z"
     iso_to = f"{date_to.isoformat()}T23:59:59Z"
-    log.info("Fetching Ozon FBS/FBO postings for the daily revenue trend...")
+    log.info("Fetching Ozon FBS/FBO postings for orders/buyouts and the daily trend...")
     postings = client.get_fbs_postings(iso_from, iso_to) + client.get_fbo_postings(iso_from, iso_to)
-    daily = _daily_revenue(postings)
+    daily, orders, buyouts = _summarize_postings(postings)
     daily_series = [
         {"date": d, "revenue": round(v["revenue"], 2), "qty": v["qty"]}
         for d, v in sorted(daily.items())
     ]
+    buyout_rate = round(buyouts["qty"] / orders["qty"] * 100, 1) if orders["qty"] else None
 
     cost_prices = cost_prices if cost_prices is not None else load_cost_prices()
 
@@ -182,6 +203,11 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
             "cost_prices_known_for": sum(1 for pr in products if pr["has_cost_price"]),
             "cost_prices_total_products": len(products),
             "qty_total": totals["qty"],
+            "orders_qty": orders["qty"],
+            "orders_revenue": round(orders["revenue"], 2),
+            "buyouts_qty": buyouts["qty"],
+            "buyouts_revenue": round(buyouts["revenue"], 2),
+            "buyout_rate": buyout_rate,
         },
         "compare": {
             "revenue": _delta(total_revenue, prev_revenue),

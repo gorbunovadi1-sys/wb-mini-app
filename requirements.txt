@@ -7,3 +7,4 @@ aiogram
 sqlalchemy
 psycopg2-binary
 cryptography
+openpyxl

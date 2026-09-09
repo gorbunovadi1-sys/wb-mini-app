@@ -40,16 +40,24 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .cabinet-tabs button.active { background: var(--accent); color: var(--accent-text-on); border-color: var(--accent); }
 .cabinet-tabs button.add { color: var(--accent); }
 
+.period-row { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
 .kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .kpi-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 13px 14px; }
 .kpi-card .k { font-size: 10.5px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; font-weight: 600; }
 .kpi-card .v { font-family: var(--font-mono); font-size: 19px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
+.kpi-card .kpi-sub { font-size: 10px; color: var(--text-secondary); margin-top: 5px; line-height: 1.3; }
 .delta { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; margin-top: 6px; font-family: var(--font-mono); }
 .delta.up { color: var(--positive); }
 .delta.down { color: var(--negative); }
 .delta.flat { color: var(--text-secondary); }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
+.period-picker { display: flex; gap: 6px; margin-bottom: 12px; }
+.period-btn {
+  flex: 1; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-secondary);
+  font-family: var(--font); font-size: 11.5px; font-weight: 600; padding: 6px 0; border-radius: 8px; cursor: pointer;
+}
+.period-btn.active { background: var(--accent); color: var(--accent-text-on); border-color: var(--accent); }
 .card h3 { font-size: 12.5px; font-weight: 600; margin-bottom: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
 .card canvas { max-height: 200px; }
 
@@ -103,15 +111,16 @@ function devTelegramId() {
   return new URLSearchParams(location.search).get('telegram_id');
 }
 
-function authQS() {
+function withAuthQS(path) {
   const id = devTelegramId();
-  return id ? `?telegram_id=${id}` : '';
+  if (!id) return path;
+  return path + (path.includes('?') ? '&' : '?') + `telegram_id=${id}`;
 }
 
 async function apiFetch(path, opts) {
   opts = opts || {};
   opts.headers = Object.assign({ 'X-Telegram-Init-Data': initData() }, opts.headers || {});
-  const res = await fetch(path + authQS(), opts);
+  const res = await fetch(withAuthQS(path), opts);
   if (!res.ok) throw new Error('HTTP ' + res.status);
   return res.json();
 }
@@ -132,6 +141,8 @@ function deltaHtml(cmp) {
 
 let cabinetsList = [];
 let activeCabinetId = null;
+let activeDays = 30;
+const DAY_PRESETS = [7, 14, 30, 60, 90];
 
 async function boot() {
   try {
@@ -165,13 +176,14 @@ function renderTabs() {
   });
 }
 
-async function loadDashboard(cabinetId) {
+async function loadDashboard(cabinetId, days) {
+  if (days) activeDays = days;
   const el = document.getElementById('content');
   const cabinet = cabinetsList.find(c => c.id === cabinetId);
   document.getElementById('topbarSub').textContent = cabinet ? (cabinet.display_name || cabinet.marketplace) : '';
   el.innerHTML = '<div class="state-msg">Загрузка данных…</div>';
   try {
-    const data = await apiFetch(`/api/cabinets/${cabinetId}/margin`);
+    const data = await apiFetch(`/api/cabinets/${cabinetId}/margin?days=${activeDays}`);
     renderDashboard(data, cabinet);
   } catch (e) {
     el.innerHTML = `<div class="state-msg">Не удалось загрузить данные кабинета.<br>${e.message}</div>`;
@@ -189,10 +201,11 @@ function renderDashboard(data, cabinet) {
   const periodLabel = data.period_label ? `Отчёт за ${data.period_label}` : `За ${data.period_days} дн.`;
 
   const kpis = [
-    { label: 'Выручка', value: fmtMoney(acc.revenue), cmp: cmp.revenue },
-    { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit },
-    { label: feesLabel, value: fmtMoney(feesValue || 0) },
-    { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent },
+    { label: 'Реализовано', value: fmtMoney(acc.revenue), cmp: cmp.revenue, sub: 'по официальному отчёту, за месяц' },
+    { label: 'Себестоимость', value: fmtMoney(acc.cogs_total || 0), sub: 'закупка проданных товаров' },
+    { label: feesLabel, value: fmtMoney(feesValue || 0), sub: 'комиссия и логистика площадки' },
+    { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit, sub: 'реализовано минус комиссия и себестоимость' },
+    { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent, sub: 'прибыль ÷ реализовано' },
   ];
 
   const daily = data.daily || [];
@@ -219,7 +232,25 @@ function renderDashboard(data, cabinet) {
 
   const costKnown = acc.cost_prices_known_for || 0, costTotal = acc.cost_prices_total_products || 0;
 
+  const hasOrdersData = acc.orders_qty !== undefined;
+  const ordersBlock = hasOrdersData ? `
+    <div class="period-row">За последние ${data.period_days} дн. (по датам заказов)</div>
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="k">Заказы</div>
+        <div class="v">${fmtNum(acc.orders_qty)} шт.</div>
+        <div class="kpi-sub">на сумму ${fmtMoney(acc.orders_revenue)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="k">Выкуплено</div>
+        <div class="v">${fmtNum(acc.buyouts_qty)} шт.${acc.buyout_rate !== null ? ` · ${acc.buyout_rate}%` : ''}</div>
+        <div class="kpi-sub">на сумму ${fmtMoney(acc.buyouts_revenue)}</div>
+      </div>
+    </div>
+  ` : '';
+
   el.innerHTML = `
+    ${ordersBlock}
     <div class="notice" style="margin-bottom:2px">${periodLabel} · обновлено ${updatedStr}${costTotal ? ` · себестоимость указана для ${costKnown}/${costTotal} товаров` : ''}</div>
 
     <div class="kpi-grid">
@@ -228,16 +259,29 @@ function renderDashboard(data, cabinet) {
           <div class="k">${k.label}</div>
           <div class="v">${k.value}</div>
           ${deltaHtml(k.cmp)}
+          ${k.sub ? `<div class="kpi-sub">${k.sub}</div>` : ''}
         </div>`).join('')}
     </div>
 
-    ${daily.length ? `<div class="card"><h3>Выручка по дням</h3><canvas id="revenueChart"></canvas></div>` : ''}
+    <div class="card">
+      <h3>${hasOrdersData ? 'Заказы по дням' : 'Выручка по дням'}</h3>
+      <div class="period-picker">
+        ${DAY_PRESETS.map(d => `<button class="period-btn ${d === activeDays ? 'active' : ''}" data-days="${d}">${d} дн.</button>`).join('')}
+      </div>
+      ${daily.length ? `<canvas id="revenueChart"></canvas>` : '<div class="state-msg">Нет данных за период</div>'}
+    </div>
 
     <div class="card">
       <h3>Топ товаров по прибыли</h3>
       <div class="product-list">${productsHtml}</div>
     </div>
   `;
+
+  el.querySelectorAll('.period-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      loadDashboard(activeCabinetId, parseInt(btn.dataset.days, 10));
+    });
+  });
 
   el.querySelectorAll('.product-card').forEach(card => {
     card.querySelector('.cogs-save').addEventListener('click', async () => {
