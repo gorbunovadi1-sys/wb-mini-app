@@ -131,6 +131,12 @@ function fmtMoney(v) {
 }
 function fmtNum(v) { return Math.round(v).toLocaleString('ru-RU'); }
 
+const MONTH_NAMES = ['январь','февраль','март','апрель','май','июнь','июль','август','сентябрь','октябрь','ноябрь','декабрь'];
+function fmtMonthLabel(periodLabel) {
+  const [y, m] = periodLabel.split('-').map(Number);
+  return `${MONTH_NAMES[m - 1]} ${y}`;
+}
+
 function deltaHtml(cmp) {
   if (!cmp || cmp.pct === null || cmp.pct === undefined) return '';
   const dir = cmp.pct > 0.05 ? 'up' : cmp.pct < -0.05 ? 'down' : 'flat';
@@ -198,13 +204,16 @@ function renderDashboard(data, cabinet) {
   const updatedStr = genDate.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
   const feesLabel = cabinet && cabinet.marketplace === 'ozon' ? 'Комиссия+логистика' : 'Реклама';
   const feesValue = acc.fees !== undefined ? acc.fees : acc.ad_spend;
-  const periodLabel = data.period_label ? `Отчёт за ${data.period_label}` : `За ${data.period_days} дн.`;
+  const periodLabel = data.period_label
+    ? `Официальный отчёт Ozon за ${fmtMonthLabel(data.period_label)} (весь календарный месяц)`
+    : `За ${data.period_days} дн.`;
 
   const kpis = [
     { label: 'Реализовано', value: fmtMoney(acc.revenue), cmp: cmp.revenue, sub: 'по официальному отчёту, за месяц' },
     { label: 'Себестоимость', value: fmtMoney(acc.cogs_total || 0), sub: 'закупка проданных товаров' },
     { label: feesLabel, value: fmtMoney(feesValue || 0), sub: 'комиссия и логистика площадки' },
-    { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit, sub: 'реализовано минус комиссия и себестоимость' },
+    ...(acc.other_fees ? [{ label: 'Прочие сборы', value: fmtMoney(acc.other_fees), sub: 'эквайринг, упаковка, хранение, страховка' }] : []),
+    { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit, sub: 'реализовано минус все сборы и себестоимость' },
     { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent, sub: 'прибыль ÷ реализовано' },
   ];
 
@@ -238,15 +247,16 @@ function renderDashboard(data, cabinet) {
     <div class="kpi-grid">
       <div class="kpi-card">
         <div class="k">Заказы</div>
-        <div class="v">${fmtNum(acc.orders_qty)} шт.</div>
-        <div class="kpi-sub">на сумму ${fmtMoney(acc.orders_revenue)}</div>
+        <div class="v">${fmtMoney(acc.orders_revenue)}</div>
+        <div class="kpi-sub">${fmtNum(acc.orders_qty)} шт.</div>
       </div>
       <div class="kpi-card">
         <div class="k">Выкуплено</div>
-        <div class="v">${fmtNum(acc.buyouts_qty)} шт.${acc.buyout_rate !== null ? ` · ${acc.buyout_rate}%` : ''}</div>
-        <div class="kpi-sub">на сумму ${fmtMoney(acc.buyouts_revenue)}</div>
+        <div class="v">${fmtMoney(acc.buyouts_revenue)}</div>
+        <div class="kpi-sub">${fmtNum(acc.buyouts_qty)} шт.${acc.buyout_rate !== null ? ` · ${acc.buyout_rate}% выкупа` : ''}</div>
       </div>
     </div>
+    <div class="notice" style="margin-top:8px">Это отдельный период (последние ${data.period_days} дн.) и другой источник данных, чем блок ниже (официальный отчёт за календарный месяц) — числа не обязаны совпадать.</div>
   ` : '';
 
   el.innerHTML = `

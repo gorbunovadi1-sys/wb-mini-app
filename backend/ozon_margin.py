@@ -1,6 +1,8 @@
+import calendar
 import collections
 import datetime
 import logging
+import time
 
 import requests
 
@@ -8,6 +10,15 @@ from . import ozon_client
 from .ozon_cost_prices import load_cost_prices
 
 log = logging.getLogger("ozon_margin")
+
+# ITEM (acquiring, packaging materials/partners, temporary storage by partners)
+# and NON_ITEM (warehouse placement, insurance, etc.) accrual categories are
+# real costs Ozon bills that a realization row's delivery_commission.total
+# does NOT include. POSTING category is deliberately excluded — its
+# total_amount mixes revenue-recognition entries with logistics deductions in
+# a way we can't reliably separate (logistics is already covered by
+# delivery_commission.total above), so trusting it risks double-counting.
+OTHER_FEE_CATEGORIES = {"ITEM", "NON_ITEM"}
 
 EXCLUDED_STATUSES = {"cancelled"}
 # "delivered" is the only status that reliably means the customer actually
@@ -55,6 +66,27 @@ def _summarize_postings(postings):
                 d["qty"] += qty
 
     return daily, orders, buyouts
+
+
+def _fetch_other_fees(client, year, month):
+    """Sums ITEM + NON_ITEM accrual categories (acquiring, packaging, storage,
+    insurance, ...) for a calendar month via /v1/finance/accrual/by-day — one
+    call per day, so this is slow (~30 sequential requests) but real money.
+    Returns a negative number (a cost), or 0.0 on total failure."""
+    _, days_in_month = calendar.monthrange(year, month)
+    total = 0.0
+    for day in range(1, days_in_month + 1):
+        date_str = f"{year}-{month:02d}-{day:02d}"
+        try:
+            accruals = client.get_accrual_by_day(date_str)
+        except Exception:
+            log.exception(f"accrual/by-day failed for {date_str}, treating as 0")
+            continue
+        for acc in accruals:
+            if acc.get("accrued_category") in OTHER_FEE_CATEGORIES:
+                total += float((acc.get("total_amount") or {}).get("amount") or 0)
+        time.sleep(0.05)
+    return total
 
 
 def _fetch_report_safe(client, year, month):
@@ -120,6 +152,11 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
     prev_year, prev_month = _prev_month(year, month)
     prev_rows, prev_report_ready = _fetch_report_safe(client, prev_year, prev_month)
 
+    other_fees_cost = 0.0
+    if report_ready:
+        log.info(f"Fetching other accrual fees (acquiring, packaging, storage...) for {year}-{month:02d}...")
+        other_fees_cost = abs(_fetch_other_fees(client, year, month))
+
     per_offer = collections.defaultdict(_empty_bucket)
     totals = _empty_bucket()
     _accumulate_rows(rows, per_offer, totals)
@@ -173,14 +210,21 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
     total_fees = totals["fees"]
     total_cogs = sum(pr["cogs_total"] for pr in products)
     total_payout = total_revenue - total_fees
-    total_profit = total_payout - total_cogs
+    # other_fees_cost (acquiring, packaging, storage placement, insurance...) is
+    # account-level, not allocated per product, so per-product profit above
+    # sums to slightly more than this total.
+    total_profit = total_payout - total_cogs - other_fees_cost
     total_margin_pct = (total_profit / total_revenue * 100) if total_revenue else 0.0
 
     prev_revenue = prev_totals["revenue"]
     prev_payout = prev_revenue - prev_totals["fees"]
     cogs_ratio = (total_cogs / total_revenue) if total_revenue else 0.0
     prev_cogs_approx = cogs_ratio * prev_revenue
-    prev_profit_approx = prev_payout - prev_cogs_approx
+    # Other-fees aren't fetched for the previous month (would double the
+    # ~30 sequential accrual calls) — approximate using this month's ratio.
+    other_fees_ratio = (other_fees_cost / total_revenue) if total_revenue else 0.0
+    prev_other_fees_approx = other_fees_ratio * prev_revenue
+    prev_profit_approx = prev_payout - prev_cogs_approx - prev_other_fees_approx
 
     def _delta(cur, prev):
         diff = cur - prev
@@ -196,6 +240,7 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
         "account": {
             "revenue": round(total_revenue, 2),
             "fees": round(total_fees, 2),
+            "other_fees": round(other_fees_cost, 2),
             "payout": round(total_payout, 2),
             "cogs_total": round(total_cogs, 2),
             "profit": round(total_profit, 2),
