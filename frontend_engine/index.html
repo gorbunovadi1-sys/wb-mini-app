@@ -205,6 +205,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
   </div>
   <nav id="viewNav">
     <button data-view="dashboard" class="active"><span class="ic">◆</span>Дашборд</button>
+    <button data-view="analytics"><span class="ic">📈</span>Аналитика</button>
     <button data-view="detail"><span class="ic">▤</span>Детализация</button>
     <button data-view="pricing"><span class="ic">₽</span>Цены</button>
   </nav>
@@ -288,7 +289,7 @@ let lastMarginData = null;
 let pricingItems = null;
 let pendingPriceChanges = {}; // offer_id -> price
 
-const VIEW_TITLES = { dashboard: 'Дашборд', detail: 'Детализация', pricing: 'Цены' };
+const VIEW_TITLES = { dashboard: 'Дашборд', analytics: 'Аналитика', detail: 'Детализация', pricing: 'Цены' };
 
 async function boot() {
   try {
@@ -347,6 +348,7 @@ function loadView() {
   const cabinet = activeCabinet();
   document.getElementById('topbarSub').textContent = cabinet ? (cabinet.display_name || cabinet.marketplace) : '';
   if (activeView === 'dashboard') return loadDashboard();
+  if (activeView === 'analytics') return loadAnalytics();
   if (activeView === 'detail') return loadDetail();
   if (activeView === 'pricing') return loadPricing();
 }
@@ -546,6 +548,132 @@ function bindCogsHandlers(root, onSaved) {
       }
     });
   });
+}
+
+// ==================== Аналитика продаж ====================
+
+async function loadAnalytics() {
+  const el = document.getElementById('content');
+  if (lastMarginData && lastMarginData.period_from === periodFrom && lastMarginData.period_to === periodTo) {
+    return renderAnalytics(lastMarginData);
+  }
+  el.innerHTML = '<div class="state-msg">Загрузка данных… (может занять до минуты)</div>';
+  try {
+    const data = await apiFetch(`/api/cabinets/${activeCabinetId}/margin?date_from=${periodFrom}&date_to=${periodTo}`);
+    lastMarginData = data;
+    renderAnalytics(data);
+  } catch (e) {
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить данные.<br>${e.message}</div>`;
+  }
+}
+
+function renderAnalytics(data) {
+  const el = document.getElementById('content');
+  const acc = data.account, cmp = data.compare || {};
+  const daily = data.daily || [];
+  const topByRevenue = [...(data.products || [])].sort((a, b) => b.revenue - a.revenue).slice(0, 10);
+
+  el.innerHTML = `
+    <div class="card">
+      <h3>Период</h3>
+      <div class="date-range">
+        <div class="field"><label>С</label><input type="date" id="anDateFrom" value="${periodFrom}"></div>
+        <div class="field"><label>По</label><input type="date" id="anDateTo" value="${periodTo}"></div>
+        <button id="anApplyPeriod">Показать</button>
+      </div>
+    </div>
+
+    <div class="notice" style="margin-bottom:2px">За период ${data.period_from} — ${data.period_to} (${data.period_days} дн.) · сравнение с предыдущими ${data.period_days} дн.</div>
+
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="k">Выручка</div>
+        <div class="v">${fmtMoney(acc.buyouts_revenue !== undefined ? acc.buyouts_revenue : acc.revenue)}</div>
+        ${deltaHtml(cmp.revenue)}
+      </div>
+      <div class="kpi-card">
+        <div class="k">Прибыль</div>
+        <div class="v">${fmtMoney(acc.profit)}</div>
+        ${deltaHtml(cmp.profit)}
+      </div>
+      <div class="kpi-card">
+        <div class="k">Маржа</div>
+        <div class="v">${acc.margin_percent.toFixed(1)}%</div>
+        ${deltaHtml(cmp.margin_percent)}
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Заказы по дням: сумма и количество</h3>
+      ${daily.length ? `<canvas id="qtyChart"></canvas>` : '<div class="state-msg">Нет данных за период</div>'}
+    </div>
+
+    <div class="card">
+      <h3>Топ-10 товаров по выручке</h3>
+      ${topByRevenue.length ? `<canvas id="topRevenueChart" style="max-height:340px"></canvas>` : '<div class="state-msg">Нет данных за период</div>'}
+    </div>
+  `;
+
+  document.getElementById('anApplyPeriod').addEventListener('click', () => {
+    const f = document.getElementById('anDateFrom').value;
+    const t = document.getElementById('anDateTo').value;
+    if (!f || !t) { alert('Укажи обе даты'); return; }
+    if (f > t) { alert('Дата "с" не может быть позже даты "по"'); return; }
+    periodFrom = f; periodTo = t; lastMarginData = null;
+    loadAnalytics();
+  });
+
+  if (daily.length) {
+    new Chart(document.getElementById('qtyChart'), {
+      data: {
+        labels: daily.map(d => d.date.slice(5)),
+        datasets: [
+          {
+            type: 'bar', label: 'Количество, шт.', data: daily.map(d => d.qty),
+            backgroundColor: 'rgba(139,92,246,0.45)', yAxisID: 'y1', order: 2,
+          },
+          {
+            type: 'line', label: 'Сумма', data: daily.map(d => d.revenue),
+            borderColor: '#ec4899', backgroundColor: 'transparent',
+            tension: 0.35, pointRadius: 0, borderWidth: 2.5, yAxisID: 'y', order: 1,
+          },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { labels: { color: '#c9c5e8', font: { size: 11 } } },
+          tooltip: { callbacks: { label: c => c.dataset.type === 'bar' ? `${c.parsed.y} шт.` : fmtMoney(c.parsed.y) } },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: '#9691b8', maxTicksLimit: 6, font: { size: 10 } } },
+          y: { position: 'left', grid: { color: '#2b2650' }, ticks: { color: '#9691b8', font: { size: 10 }, callback: v => (v/1000) + 'k' } },
+          y1: { position: 'right', grid: { display: false }, ticks: { color: '#9691b8', font: { size: 10 } } },
+        },
+      },
+    });
+  }
+
+  if (topByRevenue.length) {
+    new Chart(document.getElementById('topRevenueChart'), {
+      type: 'bar',
+      data: {
+        labels: topByRevenue.map(p => (p.title || '').slice(0, 16) + ((p.title || '').length > 16 ? '…' : '')),
+        datasets: [{
+          data: topByRevenue.map(p => p.revenue),
+          backgroundColor: 'rgba(79,124,255,0.55)',
+        }],
+      },
+      options: {
+        indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => fmtMoney(c.parsed.x) } } },
+        scales: {
+          x: { grid: { color: '#2b2650' }, ticks: { color: '#9691b8', font: { size: 10 }, callback: v => (v/1000) + 'k' } },
+          y: { grid: { display: false }, ticks: { color: '#c9c5e8', font: { size: 10 } } },
+        },
+      },
+    });
+  }
 }
 
 // ==================== Детализация по товарам ====================
