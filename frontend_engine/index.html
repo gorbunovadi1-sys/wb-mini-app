@@ -232,7 +232,16 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 
 <script>
 const tg = window.Telegram && window.Telegram.WebApp;
-if (tg) { tg.ready(); tg.expand(); }
+if (tg) {
+  tg.ready();
+  tg.expand();
+  // True fullscreen (hides Telegram's own header) — only on clients new
+  // enough to support it (Bot API 8.0+); expand() above still covers older ones.
+  if (typeof tg.requestFullscreen === 'function' && (!tg.isVersionAtLeast || tg.isVersionAtLeast('8.0'))) {
+    try { tg.requestFullscreen(); } catch (e) {}
+  }
+  tg.disableVerticalSwipes && tg.disableVerticalSwipes();
+}
 function initData() { return tg ? tg.initData : ''; }
 
 function devTelegramId() {
