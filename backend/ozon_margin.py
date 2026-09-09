@@ -4,43 +4,38 @@ import datetime
 import logging
 import time
 
-import requests
-
 from . import ozon_client
 from .ozon_cost_prices import load_cost_prices
 
 log = logging.getLogger("ozon_margin")
 
-# ITEM (acquiring, packaging materials/partners, temporary storage by partners)
-# and NON_ITEM (warehouse placement, insurance, etc.) accrual categories are
-# real costs Ozon bills that a realization row's delivery_commission.total
-# does NOT include. POSTING category is deliberately excluded — its
-# total_amount mixes revenue-recognition entries with logistics deductions in
-# a way we can't reliably separate (logistics is already covered by
-# delivery_commission.total above), so trusting it risks double-counting.
-OTHER_FEE_CATEGORIES = {"ITEM", "NON_ITEM"}
-
 EXCLUDED_STATUSES = {"cancelled"}
 # "delivered" is the only status that reliably means the customer actually
 # kept the item within this window — the seller's real "выкуп". Everything
 # else non-cancelled (in transit, awaiting packaging/delivery) is a placed
-# "заказ" that hasn't resolved into a kept purchase yet.
+# "заказ" that hasn't resolved into a kept purchase yet. Profit/margin are
+# computed off buyouts, since that's the money that's actually real.
 BUYOUT_STATUSES = {"delivered"}
 
+# ITEM (acquiring, packaging materials/partners, temporary storage by partners)
+# and NON_ITEM (warehouse placement, insurance, etc.) accrual categories are
+# real costs Ozon bills that aren't part of a posting's commission_amount.
+# POSTING category is deliberately excluded — its total_amount mixes revenue-
+# recognition entries with logistics deductions in a way that isn't safely
+# separable (confirmed against live data), so we don't trust it for costs.
+OTHER_FEE_CATEGORIES = {"ITEM", "NON_ITEM"}
 
-def _prev_month(year, month):
-    return (year - 1, 12) if month == 1 else (year, month - 1)
+
+def _empty_bucket():
+    return {"revenue": 0.0, "qty": 0, "commission": 0.0, "payout": 0.0}
 
 
-def _summarize_postings(postings):
-    """Builds, from FBS+FBO postings over the selected period: a daily revenue
-    series (for the chart), 'orders' (everything placed minus outright
-    cancellations), and 'buyouts' (only postings that reached status=delivered
-    — the subset of orders actually kept by the customer)."""
-    daily = collections.defaultdict(lambda: {"revenue": 0.0, "qty": 0})
-    orders = {"revenue": 0.0, "qty": 0}
-    buyouts = {"revenue": 0.0, "qty": 0}
-
+def _accumulate_postings(postings, per_offer_orders, per_offer_buyouts, daily, totals_orders, totals_buyouts):
+    """Splits FBS+FBO postings into 'orders' (all non-cancelled) and 'buyouts'
+    (status=delivered only), both per-offer and account-wide, plus a daily
+    orders series for the chart. financial_data.products[].product_id is
+    actually the item's SKU (confirmed against live data), matched against
+    each product's own sku field, not the catalog product_id."""
     for posting in postings:
         status = posting.get("status")
         if status in EXCLUDED_STATUSES:
@@ -49,146 +44,145 @@ def _summarize_postings(postings):
         date_str = ts[:10]
         is_buyout = status in BUYOUT_STATUSES
 
+        fin_by_sku = {}
+        for fp in (posting.get("financial_data") or {}).get("products", []):
+            fin_by_sku[fp.get("product_id")] = fp
+
         for prod in posting.get("products", []):
+            offer_id = prod.get("offer_id")
+            if not offer_id:
+                continue
+            sku = prod.get("sku")
             qty = prod.get("quantity") or 0
             price = float(prod.get("price") or 0)
             revenue = price * qty
 
-            orders["revenue"] += revenue
-            orders["qty"] += qty
-            if is_buyout:
-                buyouts["revenue"] += revenue
-                buyouts["qty"] += qty
+            fin = fin_by_sku.get(sku)
+            if fin:
+                commission = abs(fin.get("commission_amount") or 0)
+                payout = fin.get("payout")
+                if payout is None:
+                    payout = revenue - commission
+            else:
+                commission = 0.0
+                payout = revenue
+
+            po = per_offer_orders[offer_id]
+            po["revenue"] += revenue
+            po["qty"] += qty
+            po["commission"] += commission
+            po["payout"] += payout
+            po["name"] = prod.get("name") or po.get("name", "")
+            po["sku"] = sku
+
+            totals_orders["revenue"] += revenue
+            totals_orders["qty"] += qty
+            totals_orders["commission"] += commission
+            totals_orders["payout"] += payout
 
             if date_str:
                 d = daily[date_str]
                 d["revenue"] += revenue
                 d["qty"] += qty
 
-    return daily, orders, buyouts
+            if is_buyout:
+                pb = per_offer_buyouts[offer_id]
+                pb["revenue"] += revenue
+                pb["qty"] += qty
+                pb["commission"] += commission
+                pb["payout"] += payout
+                pb["name"] = po["name"]
+                pb["sku"] = sku
+
+                totals_buyouts["revenue"] += revenue
+                totals_buyouts["qty"] += qty
+                totals_buyouts["commission"] += commission
+                totals_buyouts["payout"] += payout
 
 
-def _fetch_other_fees(client, year, month):
-    """Sums ITEM + NON_ITEM accrual categories (acquiring, packaging, storage,
-    insurance, ...) for a calendar month via /v1/finance/accrual/by-day — one
-    call per day, so this is slow (~30 sequential requests) but real money.
-    Returns a negative number (a cost), or 0.0 on total failure."""
-    _, days_in_month = calendar.monthrange(year, month)
+def _fetch_other_fees(client, date_from: datetime.date, date_to: datetime.date):
+    """Sums ITEM + NON_ITEM accrual categories for [date_from, date_to] via
+    /v1/finance/accrual/by-day — one call per day. Returns a negative number
+    (a cost), or 0.0 on total failure."""
     total = 0.0
-    for day in range(1, days_in_month + 1):
-        date_str = f"{year}-{month:02d}-{day:02d}"
+    d = date_from
+    while d <= date_to:
         try:
-            accruals = client.get_accrual_by_day(date_str)
+            accruals = client.get_accrual_by_day(d.isoformat())
         except Exception:
-            log.exception(f"accrual/by-day failed for {date_str}, treating as 0")
-            continue
+            log.exception(f"accrual/by-day failed for {d.isoformat()}, treating as 0")
+            accruals = []
         for acc in accruals:
             if acc.get("accrued_category") in OTHER_FEE_CATEGORIES:
                 total += float((acc.get("total_amount") or {}).get("amount") or 0)
+        d += datetime.timedelta(days=1)
         time.sleep(0.05)
     return total
 
 
-def _fetch_report_safe(client, year, month):
-    try:
-        data = client.get_realization_report(year, month)
-        return data.get("rows", []), True
-    except requests.HTTPError as e:
-        log.warning(f"Realization report {year}-{month:02d} unavailable: {e}")
-        return [], False
-
-
-def _empty_bucket():
-    return {"revenue": 0.0, "qty": 0, "fees": 0.0}
-
-
-def _accumulate_rows(rows, per_offer, totals):
-    """Uses the official monthly Отчёт о реализации — actual booked figures, not
-    an estimate. Per row: revenue = price × net qty (sale minus same-row return);
-    fees = the row's total deduction (delivery_commission.total, net of any
-    return_commission.total) — Ozon bundles commission+logistics+coinvestment
-    into this one `total` field and doesn't itself split them out further
-    (its `commission` sub-field is always 0), so neither do we."""
-    for row in rows:
-        item = row.get("item") or {}
-        offer_id = item.get("offer_id")
-        if not offer_id:
-            continue
-        dc = row.get("delivery_commission") or {}
-        rc = row.get("return_commission") or {}
-        qty = (dc.get("quantity") or 0) - (rc.get("quantity") or 0)
-        price = row.get("seller_price_per_instance") or 0
-
-        revenue = price * qty
-        fees = (dc.get("total") or 0) - (rc.get("total") or 0)
-
-        p = per_offer[offer_id]
-        p["revenue"] += revenue
-        p["qty"] += qty
-        p["fees"] += fees
-        p["name"] = item.get("name") or p.get("name", "")
-        p["sku"] = item.get("sku") or p.get("sku")
-
-        totals["revenue"] += revenue
-        totals["qty"] += qty
-        totals["fees"] += fees
-
-
-def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
+def build_margin_summary(
+    client=None,
+    cost_prices=None,
+    days: int = 30,
+    date_from: str = None,
+    date_to: str = None,
+) -> dict:
+    """Everything here — orders, buyouts, fees, cost prices, profit, margin —
+    is computed for the SAME single period (either `days` back from today, or
+    an explicit [date_from, date_to] range), from one source (FBS+FBO
+    postings + accrual/by-day). No more mixing a rolling window with a
+    separate monthly settlement report."""
     client = client or ozon_client.default_client
-    today = datetime.date.today()
-    year, month = today.year, today.month
 
-    log.info(f"Fetching Ozon realization report {year}-{month:02d} (факт commission+logistics)...")
-    rows, report_ready = _fetch_report_safe(client, year, month)
-    if not report_ready:
-        # The current month's report isn't published yet (Ozon closes it with a
-        # lag) — fall back to the last fully closed month so the dashboard shows
-        # real figures instead of zeros.
-        year, month = _prev_month(year, month)
-        log.info(f"Falling back to {year}-{month:02d}")
-        rows, report_ready = _fetch_report_safe(client, year, month)
+    if date_from and date_to:
+        d_from = datetime.date.fromisoformat(date_from)
+        d_to = datetime.date.fromisoformat(date_to)
+    else:
+        d_to = datetime.date.today()
+        d_from = d_to - datetime.timedelta(days=days - 1)
 
-    prev_year, prev_month = _prev_month(year, month)
-    prev_rows, prev_report_ready = _fetch_report_safe(client, prev_year, prev_month)
+    period_len = (d_to - d_from).days + 1
+    prev_d_to = d_from - datetime.timedelta(days=1)
+    prev_d_from = prev_d_to - datetime.timedelta(days=period_len - 1)
 
-    other_fees_cost = 0.0
-    if report_ready:
-        log.info(f"Fetching other accrual fees (acquiring, packaging, storage...) for {year}-{month:02d}...")
-        other_fees_cost = abs(_fetch_other_fees(client, year, month))
+    iso_from, iso_to = f"{d_from.isoformat()}T00:00:00Z", f"{d_to.isoformat()}T23:59:59Z"
+    prev_iso_from, prev_iso_to = f"{prev_d_from.isoformat()}T00:00:00Z", f"{prev_d_to.isoformat()}T23:59:59Z"
 
-    per_offer = collections.defaultdict(_empty_bucket)
-    totals = _empty_bucket()
-    _accumulate_rows(rows, per_offer, totals)
-
-    prev_totals = _empty_bucket()
-    _accumulate_rows(prev_rows, collections.defaultdict(_empty_bucket), prev_totals)
-
-    # Daily revenue trend (approximate, built from FBS+FBO postings) — separate
-    # from the monthly report above, used only for the chart.
-    date_to = today
-    fetch_from = date_to - datetime.timedelta(days=days)
-    iso_from = f"{fetch_from.isoformat()}T00:00:00Z"
-    iso_to = f"{date_to.isoformat()}T23:59:59Z"
-    log.info("Fetching Ozon FBS/FBO postings for orders/buyouts and the daily trend...")
+    log.info(f"Fetching Ozon postings for {d_from}..{d_to} (and prior period for comparison)...")
     postings = client.get_fbs_postings(iso_from, iso_to) + client.get_fbo_postings(iso_from, iso_to)
-    daily, orders, buyouts = _summarize_postings(postings)
+    prev_postings = client.get_fbs_postings(prev_iso_from, prev_iso_to) + client.get_fbo_postings(prev_iso_from, prev_iso_to)
+
+    per_offer_orders = collections.defaultdict(_empty_bucket)
+    per_offer_buyouts = collections.defaultdict(_empty_bucket)
+    daily = collections.defaultdict(lambda: {"revenue": 0.0, "qty": 0})
+    totals_orders = _empty_bucket()
+    totals_buyouts = _empty_bucket()
+    _accumulate_postings(postings, per_offer_orders, per_offer_buyouts, daily, totals_orders, totals_buyouts)
+
+    prev_totals_buyouts = _empty_bucket()
+    _accumulate_postings(
+        prev_postings,
+        collections.defaultdict(_empty_bucket), collections.defaultdict(_empty_bucket),
+        collections.defaultdict(lambda: {"revenue": 0.0, "qty": 0}),
+        _empty_bucket(), prev_totals_buyouts,
+    )
+
+    log.info(f"Fetching other accrual fees (acquiring, packaging, storage...) for {d_from}..{d_to}...")
+    other_fees_cost = abs(_fetch_other_fees(client, d_from, d_to))
+
     daily_series = [
         {"date": d, "revenue": round(v["revenue"], 2), "qty": v["qty"]}
         for d, v in sorted(daily.items())
     ]
-    buyout_rate = round(buyouts["qty"] / orders["qty"] * 100, 1) if orders["qty"] else None
+    buyout_rate = round(totals_buyouts["qty"] / totals_orders["qty"] * 100, 1) if totals_orders["qty"] else None
 
     cost_prices = cost_prices if cost_prices is not None else load_cost_prices()
 
     products = []
-    for offer_id, p in per_offer.items():
-        if p["qty"] == 0 and p["revenue"] == 0:
-            continue  # a sale fully offset by a return within the same period
+    for offer_id, p in per_offer_buyouts.items():
         cogs_unit = cost_prices.get(offer_id, 0)
         cogs_total = cogs_unit * p["qty"]
-        payout = p["revenue"] - p["fees"]
-        profit = payout - cogs_total
+        profit = p["payout"] - cogs_total
         margin_pct = (profit / p["revenue"] * 100) if p["revenue"] else 0.0
         products.append({
             "offer_id": offer_id,
@@ -196,8 +190,8 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
             "title": p.get("name") or offer_id,
             "revenue": round(p["revenue"], 2),
             "qty": p["qty"],
-            "fees": round(p["fees"], 2),
-            "payout": round(payout, 2),
+            "commission": round(p["commission"], 2),
+            "payout": round(p["payout"], 2),
             "cogs_unit": cogs_unit,
             "cogs_total": round(cogs_total, 2),
             "profit": round(profit, 2),
@@ -206,25 +200,20 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
         })
     products.sort(key=lambda x: -x["revenue"])
 
-    total_revenue = totals["revenue"]
-    total_fees = totals["fees"]
+    total_revenue = totals_buyouts["revenue"]
+    total_commission = totals_buyouts["commission"]
+    total_payout = totals_buyouts["payout"]
     total_cogs = sum(pr["cogs_total"] for pr in products)
-    total_payout = total_revenue - total_fees
-    # other_fees_cost (acquiring, packaging, storage placement, insurance...) is
-    # account-level, not allocated per product, so per-product profit above
-    # sums to slightly more than this total.
-    total_profit = total_payout - total_cogs - other_fees_cost
+    total_profit = total_payout - other_fees_cost - total_cogs
     total_margin_pct = (total_profit / total_revenue * 100) if total_revenue else 0.0
 
-    prev_revenue = prev_totals["revenue"]
-    prev_payout = prev_revenue - prev_totals["fees"]
+    prev_revenue = prev_totals_buyouts["revenue"]
+    prev_payout = prev_totals_buyouts["payout"]
     cogs_ratio = (total_cogs / total_revenue) if total_revenue else 0.0
-    prev_cogs_approx = cogs_ratio * prev_revenue
-    # Other-fees aren't fetched for the previous month (would double the
-    # ~30 sequential accrual calls) — approximate using this month's ratio.
     other_fees_ratio = (other_fees_cost / total_revenue) if total_revenue else 0.0
+    prev_cogs_approx = cogs_ratio * prev_revenue
     prev_other_fees_approx = other_fees_ratio * prev_revenue
-    prev_profit_approx = prev_payout - prev_cogs_approx - prev_other_fees_approx
+    prev_profit_approx = prev_payout - prev_other_fees_approx - prev_cogs_approx
 
     def _delta(cur, prev):
         diff = cur - prev
@@ -233,13 +222,12 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
 
     return {
         "generated_at": datetime.datetime.now().isoformat(),
-        "period_label": f"{year}-{month:02d}",
-        "period_days": days,
-        "report_ready": report_ready,
-        "prev_report_ready": prev_report_ready,
+        "period_from": d_from.isoformat(),
+        "period_to": d_to.isoformat(),
+        "period_days": period_len,
         "account": {
             "revenue": round(total_revenue, 2),
-            "fees": round(total_fees, 2),
+            "commission": round(total_commission, 2),
             "other_fees": round(other_fees_cost, 2),
             "payout": round(total_payout, 2),
             "cogs_total": round(total_cogs, 2),
@@ -247,11 +235,11 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
             "margin_percent": round(total_margin_pct, 2),
             "cost_prices_known_for": sum(1 for pr in products if pr["has_cost_price"]),
             "cost_prices_total_products": len(products),
-            "qty_total": totals["qty"],
-            "orders_qty": orders["qty"],
-            "orders_revenue": round(orders["revenue"], 2),
-            "buyouts_qty": buyouts["qty"],
-            "buyouts_revenue": round(buyouts["revenue"], 2),
+            "qty_total": totals_buyouts["qty"],
+            "orders_qty": totals_orders["qty"],
+            "orders_revenue": round(totals_orders["revenue"], 2),
+            "buyouts_qty": totals_buyouts["qty"],
+            "buyouts_revenue": round(totals_buyouts["revenue"], 2),
             "buyout_rate": buyout_rate,
         },
         "compare": {

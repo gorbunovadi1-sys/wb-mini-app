@@ -14,6 +14,7 @@ from . import margin
 from . import ozon_dimensions
 from . import ozon_margin
 from . import ozon_prices
+from . import ozon_pricing
 from . import ozon_promotions
 from .db import init_db
 from .ozon_client import OzonClient
@@ -101,6 +102,8 @@ def get_cabinet_margin(
     x_telegram_init_data: Optional[str] = Header(default=None),
     telegram_id: Optional[int] = None,
     days: int = 30,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ):
     days = max(7, min(days, 180))
     user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
@@ -110,7 +113,9 @@ def get_cabinet_margin(
     try:
         if cabinet["marketplace"] == "wb":
             return margin.build_margin_summary(client=client, cost_prices=cost_prices, days=days)
-        return ozon_margin.build_margin_summary(client=client, cost_prices=cost_prices, days=days)
+        return ozon_margin.build_margin_summary(
+            client=client, cost_prices=cost_prices, days=days, date_from=date_from, date_to=date_to,
+        )
     except Exception as e:
         log.exception(f"Failed to build margin for cabinet {cabinet_id}")
         raise HTTPException(status_code=502, detail=f"upstream marketplace API error: {e}")
@@ -173,6 +178,20 @@ def set_cabinet_ozon_prices(
     if not updates:
         raise HTTPException(status_code=400, detail="updates list is empty")
     return {"status": "done", "results": ozon_prices.update_prices(updates, client=client)}
+
+
+@app.get("/api/cabinets/{cabinet_id}/ozon/pricing")
+def get_cabinet_ozon_pricing(
+    cabinet_id: int,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+):
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
+    if cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet)
+    return {"items": ozon_pricing.get_pricing_list(client, cabinet_id)}
 
 
 @app.get("/api/cabinets/{cabinet_id}/ozon/promotions")

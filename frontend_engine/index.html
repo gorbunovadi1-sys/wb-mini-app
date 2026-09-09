@@ -29,16 +29,17 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); font
 .topbar h1 { font-size: 17px; font-weight: 700; }
 .topbar .sub { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .08em; margin-top: 2px; }
 
-main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-width: 720px; margin: 0 auto; }
+main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-width: 720px; margin: 0 auto; padding-bottom: 90px; }
 
-.cabinet-tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
-.cabinet-tabs button {
+.cabinet-tabs, .view-tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
+.cabinet-tabs button, .view-tabs button {
   flex: none; padding: 8px 14px; border-radius: 20px; border: 1px solid var(--border);
   background: var(--surface); color: var(--text-secondary); font-family: var(--font); font-size: 12.5px; font-weight: 600;
   cursor: pointer; white-space: nowrap;
 }
-.cabinet-tabs button.active { background: var(--accent); color: var(--accent-text-on); border-color: var(--accent); }
-.cabinet-tabs button.add { color: var(--accent); }
+.cabinet-tabs button.active, .view-tabs button.active { background: var(--accent); color: var(--accent-text-on); border-color: var(--accent); }
+.view-tabs { display: none; }
+.view-tabs.show { display: flex; }
 
 .period-row { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
 .kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -52,14 +53,25 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .delta.flat { color: var(--text-secondary); }
 
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
-.period-picker { display: flex; gap: 6px; margin-bottom: 12px; }
-.period-btn {
-  flex: 1; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-secondary);
-  font-family: var(--font); font-size: 11.5px; font-weight: 600; padding: 6px 0; border-radius: 8px; cursor: pointer;
-}
-.period-btn.active { background: var(--accent); color: var(--accent-text-on); border-color: var(--accent); }
 .card h3 { font-size: 12.5px; font-weight: 600; margin-bottom: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
 .card canvas { max-height: 200px; }
+
+.date-range { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.date-range .field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 120px; }
+.date-range label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
+.date-range input[type=date] {
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px; color: var(--text);
+  font-family: var(--font); font-size: 12.5px;
+}
+.date-range button {
+  flex: none; border: none; background: var(--accent); color: var(--accent-text-on);
+  font-family: var(--font); font-size: 12.5px; font-weight: 700; padding: 9px 16px; border-radius: 8px; cursor: pointer;
+}
+.quick-chips { display: flex; gap: 6px; margin-top: 8px; }
+.quick-chips button {
+  flex: 1; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-secondary);
+  font-family: var(--font); font-size: 11px; font-weight: 600; padding: 5px 0; border-radius: 7px; cursor: pointer;
+}
 
 .product-list { display: flex; flex-direction: column; gap: 10px; }
 .product-card .product-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; min-width: 0; }
@@ -72,6 +84,11 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .product-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono); }
 
 .notice { background: var(--warn-bg); border-radius: 10px; padding: 10px 12px; font-size: 12px; color: var(--warn-text); line-height: 1.4; }
+
+.search-box {
+  width: 100%; box-sizing: border-box; background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 12px; font-family: var(--font); font-size: 13px; color: var(--text);
+}
 
 .cogs-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 .cogs-row label { font-size: 10.5px; color: var(--text-secondary); flex: none; }
@@ -87,6 +104,43 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .cogs-row button.saved { background: #7cff00; }
 .state-msg { text-align: center; padding: 60px 20px; color: var(--text-secondary); font-size: 13px; line-height: 1.6; }
 .state-msg b { color: var(--text); }
+
+/* ---- Pricing tab ---- */
+.price-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
+.price-card.staged { border-color: var(--accent); }
+.price-card .p-name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+.price-card .p-offer { font-size: 10.5px; color: var(--text-secondary); font-family: var(--font-mono); margin-bottom: 10px; }
+.price-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.price-field label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .03em; display: block; margin-bottom: 4px; }
+.price-field input {
+  width: 100%; box-sizing: border-box; background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px;
+  padding: 7px 8px; font-family: var(--font-mono); font-size: 13px; color: var(--text);
+}
+.price-summary { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono); margin-bottom: 8px; }
+.price-profit-row { display: flex; justify-content: space-between; align-items: baseline; padding-top: 8px; border-top: 1px solid var(--border); }
+.price-profit-row .pp-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; }
+.price-profit-row .pp-value { font-family: var(--font-mono); font-size: 17px; font-weight: 700; }
+.price-profit-row .pp-value.neg { color: var(--negative); }
+.price-profit-row .pp-value.pos { color: var(--positive); }
+.price-suggest { font-size: 10.5px; color: var(--text-secondary); margin-top: 4px; }
+.price-suggest b { color: var(--positive); font-family: var(--font-mono); }
+.price-save-row { margin-top: 10px; display: flex; justify-content: flex-end; }
+.price-save-btn {
+  border: none; border-radius: 8px; padding: 7px 14px; font-family: var(--font); font-size: 11.5px; font-weight: 700; cursor: pointer;
+}
+.price-save-btn.pos { background: var(--accent); color: var(--accent-text-on); }
+.price-save-btn.staged-btn { background: #7cff00; color: var(--accent-text-on); }
+.push-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; padding: 12px 16px;
+  background: var(--surface); border-top: 1px solid var(--accent); display: none; align-items: center; justify-content: space-between;
+}
+.push-bar.show { display: flex; }
+.push-bar span { font-size: 12.5px; font-weight: 600; }
+.push-bar button {
+  border: none; background: var(--accent); color: var(--accent-text-on); font-family: var(--font); font-weight: 700;
+  font-size: 12.5px; padding: 9px 16px; border-radius: 8px; cursor: pointer;
+}
+.push-bar button:disabled { opacity: 0.5; }
 </style>
 </head>
 <body>
@@ -98,8 +152,18 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 
 <main>
   <div class="cabinet-tabs" id="cabinetTabs"></div>
+  <div class="view-tabs" id="viewTabs">
+    <button data-view="dashboard" class="active">Дашборд</button>
+    <button data-view="detail">Детализация</button>
+    <button data-view="pricing">Цены</button>
+  </div>
   <div id="content"><div class="state-msg">Загрузка…</div></div>
 </main>
+
+<div class="push-bar" id="pushBar">
+  <span id="pushBarText">Изменено: 0</span>
+  <button id="pushBarBtn">Отправить обновления</button>
+</div>
 
 <script>
 const tg = window.Telegram && window.Telegram.WebApp;
@@ -107,16 +171,13 @@ if (tg) { tg.ready(); tg.expand(); }
 function initData() { return tg ? tg.initData : ''; }
 
 function devTelegramId() {
-  // Local testing only: /?telegram_id=... in the URL when there's no real Telegram context.
   return new URLSearchParams(location.search).get('telegram_id');
 }
-
 function withAuthQS(path) {
   const id = devTelegramId();
   if (!id) return path;
   return path + (path.includes('?') ? '&' : '?') + `telegram_id=${id}`;
 }
-
 async function apiFetch(path, opts) {
   opts = opts || {};
   opts.headers = Object.assign({ 'X-Telegram-Init-Data': initData() }, opts.headers || {});
@@ -130,12 +191,7 @@ function fmtMoney(v) {
   return sign + Math.round(Math.abs(v)).toLocaleString('ru-RU') + ' ₽';
 }
 function fmtNum(v) { return Math.round(v).toLocaleString('ru-RU'); }
-
-const MONTH_NAMES = ['январь','февраль','март','апрель','май','июнь','июль','август','сентябрь','октябрь','ноябрь','декабрь'];
-function fmtMonthLabel(periodLabel) {
-  const [y, m] = periodLabel.split('-').map(Number);
-  return `${MONTH_NAMES[m - 1]} ${y}`;
-}
+function isoDate(d) { return d.toISOString().slice(0, 10); }
 
 function deltaHtml(cmp) {
   if (!cmp || cmp.pct === null || cmp.pct === undefined) return '';
@@ -147,8 +203,12 @@ function deltaHtml(cmp) {
 
 let cabinetsList = [];
 let activeCabinetId = null;
-let activeDays = 30;
-const DAY_PRESETS = [7, 14, 30, 60, 90];
+let activeView = 'dashboard';
+let periodFrom = isoDate(new Date(Date.now() - 29 * 86400000));
+let periodTo = isoDate(new Date());
+let lastMarginData = null;
+let pricingItems = null;
+let pendingPriceChanges = {}; // offer_id -> price
 
 async function boot() {
   try {
@@ -158,16 +218,26 @@ async function boot() {
     document.getElementById('content').innerHTML = `<div class="state-msg">Не удалось загрузить кабинеты.<br>${e.message}</div>`;
     return;
   }
-  renderTabs();
+  renderCabinetTabs();
+  document.querySelectorAll('#viewTabs button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activeView = btn.dataset.view;
+      document.querySelectorAll('#viewTabs button').forEach(b => b.classList.toggle('active', b === btn));
+      loadView();
+    });
+  });
+  document.getElementById('pushBarBtn').addEventListener('click', pushPriceUpdates);
+
   if (cabinetsList.length) {
     activeCabinetId = cabinetsList[0].id;
-    loadDashboard(activeCabinetId);
+    document.getElementById('viewTabs').classList.add('show');
+    loadView();
   } else {
     document.getElementById('content').innerHTML = `<div class="state-msg"><b>Кабинеты пока не подключены.</b><br>Вернись в чат с ботом и нажми «Подключить Wildberries» или «Подключить Ozon».</div>`;
   }
 }
 
-function renderTabs() {
+function renderCabinetTabs() {
   const el = document.getElementById('cabinetTabs');
   const marketLabel = { wb: 'WB', ozon: 'Ozon' };
   el.innerHTML = cabinetsList.map(c => `
@@ -176,21 +246,35 @@ function renderTabs() {
   el.querySelectorAll('button').forEach(btn => {
     btn.addEventListener('click', () => {
       activeCabinetId = parseInt(btn.dataset.id, 10);
-      renderTabs();
-      loadDashboard(activeCabinetId);
+      renderCabinetTabs();
+      lastMarginData = null; pricingItems = null; pendingPriceChanges = {};
+      updatePushBar();
+      loadView();
     });
   });
 }
 
-async function loadDashboard(cabinetId, days) {
-  if (days) activeDays = days;
-  const el = document.getElementById('content');
-  const cabinet = cabinetsList.find(c => c.id === cabinetId);
+function activeCabinet() { return cabinetsList.find(c => c.id === activeCabinetId); }
+
+function loadView() {
+  const cabinet = activeCabinet();
   document.getElementById('topbarSub').textContent = cabinet ? (cabinet.display_name || cabinet.marketplace) : '';
-  el.innerHTML = '<div class="state-msg">Загрузка данных…</div>';
+  if (activeView === 'dashboard') return loadDashboard();
+  if (activeView === 'detail') return loadDetail();
+  if (activeView === 'pricing') return loadPricing();
+}
+
+// ==================== Dashboard ====================
+
+async function loadDashboard(fromDate, toDate) {
+  if (fromDate) periodFrom = fromDate;
+  if (toDate) periodTo = toDate;
+  const el = document.getElementById('content');
+  el.innerHTML = '<div class="state-msg">Загрузка данных… (может занять до минуты)</div>';
   try {
-    const data = await apiFetch(`/api/cabinets/${cabinetId}/margin?days=${activeDays}`);
-    renderDashboard(data, cabinet);
+    const data = await apiFetch(`/api/cabinets/${activeCabinetId}/margin?date_from=${periodFrom}&date_to=${periodTo}`);
+    lastMarginData = data;
+    renderDashboard(data, activeCabinet());
   } catch (e) {
     el.innerHTML = `<div class="state-msg">Не удалось загрузить данные кабинета.<br>${e.message}</div>`;
   }
@@ -202,48 +286,10 @@ function renderDashboard(data, cabinet) {
   const cmp = data.compare || {};
   const genDate = new Date(data.generated_at);
   const updatedStr = genDate.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-  const feesLabel = cabinet && cabinet.marketplace === 'ozon' ? 'Комиссия+логистика' : 'Реклама';
-  const feesValue = acc.fees !== undefined ? acc.fees : acc.ad_spend;
-  const periodLabel = data.period_label
-    ? `Официальный отчёт Ozon за ${fmtMonthLabel(data.period_label)} (весь календарный месяц)`
-    : `За ${data.period_days} дн.`;
-
-  const kpis = [
-    { label: 'Реализовано', value: fmtMoney(acc.revenue), cmp: cmp.revenue, sub: 'по официальному отчёту, за месяц' },
-    { label: 'Себестоимость', value: fmtMoney(acc.cogs_total || 0), sub: 'закупка проданных товаров' },
-    { label: feesLabel, value: fmtMoney(feesValue || 0), sub: 'комиссия и логистика площадки' },
-    ...(acc.other_fees ? [{ label: 'Прочие сборы', value: fmtMoney(acc.other_fees), sub: 'эквайринг, упаковка, хранение, страховка' }] : []),
-    { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit, sub: 'реализовано минус все сборы и себестоимость' },
-    { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent, sub: 'прибыль ÷ реализовано' },
-  ];
-
-  const daily = data.daily || [];
-  const sortedProducts = [...(data.products || [])].sort((a, b) => b.profit - a.profit).slice(0, 8);
-  const maxAbsProfit = Math.max(...sortedProducts.map(p => Math.abs(p.profit)), 1);
-  const productsHtml = sortedProducts.map(p => {
-    const neg = p.profit < 0;
-    const barWidth = Math.max(4, Math.abs(p.profit) / maxAbsProfit * 100);
-    const itemKey = p.offer_id !== undefined && p.offer_id !== null ? p.offer_id : p.nm_id;
-    return `<div class="product-card" data-item="${itemKey}">
-      <div class="product-top">
-        <div class="product-name">${p.title}</div>
-        <div class="product-profit ${neg ? 'neg' : ''}">${fmtMoney(p.profit)}</div>
-      </div>
-      <div class="product-bar-track"><div class="product-bar-fill ${neg ? 'neg' : ''}" style="width:${barWidth}%"></div></div>
-      <div class="product-meta"><span>выручка ${fmtMoney(p.revenue)} · ${p.qty} шт.</span><span>маржа ${p.margin_percent.toFixed(1)}%</span></div>
-      <div class="cogs-row">
-        <label>Закупка/шт.</label>
-        <input type="number" class="cogs-input" value="${p.cogs_unit || ''}" placeholder="0">
-        <button class="cogs-save">Сохранить</button>
-      </div>
-    </div>`;
-  }).join('') || '<div class="state-msg">Нет данных за период</div>';
-
-  const costKnown = acc.cost_prices_known_for || 0, costTotal = acc.cost_prices_total_products || 0;
+  const isOzon = cabinet && cabinet.marketplace === 'ozon';
 
   const hasOrdersData = acc.orders_qty !== undefined;
   const ordersBlock = hasOrdersData ? `
-    <div class="period-row">За последние ${data.period_days} дн. (по датам заказов)</div>
     <div class="kpi-grid">
       <div class="kpi-card">
         <div class="k">Заказы</div>
@@ -256,12 +302,47 @@ function renderDashboard(data, cabinet) {
         <div class="kpi-sub">${fmtNum(acc.buyouts_qty)} шт.${acc.buyout_rate !== null ? ` · ${acc.buyout_rate}% выкупа` : ''}</div>
       </div>
     </div>
-    <div class="notice" style="margin-top:8px">Это отдельный период (последние ${data.period_days} дн.) и другой источник данных, чем блок ниже (официальный отчёт за календарный месяц) — числа не обязаны совпадать.</div>
   ` : '';
 
+  const kpis = isOzon ? [
+    { label: 'Себестоимость', value: fmtMoney(acc.cogs_total || 0), sub: 'закупка выкупленных товаров' },
+    { label: 'Комиссия', value: fmtMoney(acc.commission || 0), sub: 'комиссия Ozon с продаж' },
+    { label: 'Прочие сборы', value: fmtMoney(acc.other_fees || 0), sub: 'эквайринг, упаковка, хранение...' },
+    { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit, sub: 'выкуплено минус все расходы и себестоимость' },
+    { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent, sub: 'прибыль ÷ выкуплено' },
+  ] : [
+    { label: 'Выручка', value: fmtMoney(acc.revenue), cmp: cmp.revenue },
+    { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit },
+    { label: 'Реклама', value: fmtMoney(acc.ad_spend || 0) },
+    { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent },
+  ];
+
+  const daily = data.daily || [];
+  const sortedProducts = [...(data.products || [])].sort((a, b) => b.profit - a.profit).slice(0, 8);
+  const maxAbsProfit = Math.max(...sortedProducts.map(p => Math.abs(p.profit)), 1);
+  const productsHtml = sortedProducts.map(p => productCardHtml(p, maxAbsProfit)).join('')
+    || '<div class="state-msg">Нет данных за период</div>';
+
+  const costKnown = acc.cost_prices_known_for || 0, costTotal = acc.cost_prices_total_products || 0;
+
   el.innerHTML = `
+    <div class="card">
+      <h3>Период</h3>
+      <div class="date-range">
+        <div class="field"><label>С</label><input type="date" id="dateFrom" value="${periodFrom}"></div>
+        <div class="field"><label>По</label><input type="date" id="dateTo" value="${periodTo}"></div>
+        <button id="applyPeriod">Показать</button>
+      </div>
+      <div class="quick-chips">
+        <button data-days="7">7 дн.</button>
+        <button data-days="14">14 дн.</button>
+        <button data-days="30">30 дн.</button>
+        <button data-days="90">90 дн.</button>
+      </div>
+    </div>
+
     ${ordersBlock}
-    <div class="notice" style="margin-bottom:2px">${periodLabel} · обновлено ${updatedStr}${costTotal ? ` · себестоимость указана для ${costKnown}/${costTotal} товаров` : ''}</div>
+    <div class="notice" style="margin-bottom:2px">За период ${data.period_from} — ${data.period_to} (${data.period_days} дн.) · обновлено ${updatedStr}${costTotal ? ` · себестоимость указана для ${costKnown}/${costTotal} товаров` : ''}</div>
 
     <div class="kpi-grid">
       ${kpis.map(k => `
@@ -274,10 +355,7 @@ function renderDashboard(data, cabinet) {
     </div>
 
     <div class="card">
-      <h3>${hasOrdersData ? 'Заказы по дням' : 'Выручка по дням'}</h3>
-      <div class="period-picker">
-        ${DAY_PRESETS.map(d => `<button class="period-btn ${d === activeDays ? 'active' : ''}" data-days="${d}">${d} дн.</button>`).join('')}
-      </div>
+      <h3>Заказы по дням</h3>
       ${daily.length ? `<canvas id="revenueChart"></canvas>` : '<div class="state-msg">Нет данных за период</div>'}
     </div>
 
@@ -287,34 +365,23 @@ function renderDashboard(data, cabinet) {
     </div>
   `;
 
-  el.querySelectorAll('.period-btn').forEach(btn => {
+  document.getElementById('applyPeriod').addEventListener('click', () => {
+    const f = document.getElementById('dateFrom').value;
+    const t = document.getElementById('dateTo').value;
+    if (!f || !t) { alert('Укажи обе даты'); return; }
+    if (f > t) { alert('Дата "с" не может быть позже даты "по"'); return; }
+    loadDashboard(f, t);
+  });
+  document.querySelectorAll('.quick-chips button').forEach(btn => {
     btn.addEventListener('click', () => {
-      loadDashboard(activeCabinetId, parseInt(btn.dataset.days, 10));
+      const days = parseInt(btn.dataset.days, 10);
+      const to = new Date();
+      const from = new Date(Date.now() - (days - 1) * 86400000);
+      loadDashboard(isoDate(from), isoDate(to));
     });
   });
 
-  el.querySelectorAll('.product-card').forEach(card => {
-    card.querySelector('.cogs-save').addEventListener('click', async () => {
-      const btn = card.querySelector('.cogs-save');
-      const input = card.querySelector('.cogs-input');
-      const itemKey = card.dataset.item;
-      const value = parseFloat(input.value);
-      if (!value || value < 0) { alert('Укажи закупочную цену за штуку'); return; }
-      btn.disabled = true; btn.textContent = 'Сохранение…';
-      try {
-        await apiFetch(`/api/cabinets/${activeCabinetId}/cost-prices`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ prices: { [itemKey]: value } }),
-        });
-        btn.textContent = 'Сохранено ✓'; btn.classList.add('saved');
-        setTimeout(() => loadDashboard(activeCabinetId), 900);
-      } catch (e) {
-        btn.textContent = 'Ошибка'; btn.disabled = false;
-        alert('Не удалось сохранить: ' + e.message);
-      }
-    });
-  });
+  bindCogsHandlers(el, () => loadDashboard());
 
   if (daily.length) {
     new Chart(document.getElementById('revenueChart'), {
@@ -336,6 +403,274 @@ function renderDashboard(data, cabinet) {
         }
       }
     });
+  }
+}
+
+function productCardHtml(p, maxAbsProfit) {
+  const neg = p.profit < 0;
+  const barWidth = Math.max(4, Math.abs(p.profit) / maxAbsProfit * 100);
+  const itemKey = p.offer_id !== undefined && p.offer_id !== null ? p.offer_id : p.nm_id;
+  return `<div class="product-card" data-item="${itemKey}">
+    <div class="product-top">
+      <div class="product-name">${p.title}</div>
+      <div class="product-profit ${neg ? 'neg' : ''}">${fmtMoney(p.profit)}</div>
+    </div>
+    <div class="product-bar-track"><div class="product-bar-fill ${neg ? 'neg' : ''}" style="width:${barWidth}%"></div></div>
+    <div class="product-meta"><span>выручка ${fmtMoney(p.revenue)} · ${p.qty} шт.</span><span>маржа ${p.margin_percent.toFixed(1)}%</span></div>
+    <div class="cogs-row">
+      <label>Закупка/шт.</label>
+      <input type="number" class="cogs-input" value="${p.cogs_unit || ''}" placeholder="0">
+      <button class="cogs-save">Сохранить</button>
+    </div>
+  </div>`;
+}
+
+function bindCogsHandlers(root, onSaved) {
+  root.querySelectorAll('.product-card').forEach(card => {
+    card.querySelector('.cogs-save').addEventListener('click', async () => {
+      const btn = card.querySelector('.cogs-save');
+      const input = card.querySelector('.cogs-input');
+      const itemKey = card.dataset.item;
+      const value = parseFloat(input.value);
+      if (!value || value < 0) { alert('Укажи закупочную цену за штуку'); return; }
+      btn.disabled = true; btn.textContent = 'Сохранение…';
+      try {
+        await apiFetch(`/api/cabinets/${activeCabinetId}/cost-prices`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prices: { [itemKey]: value } }),
+        });
+        btn.textContent = 'Сохранено ✓'; btn.classList.add('saved');
+        setTimeout(onSaved, 900);
+      } catch (e) {
+        btn.textContent = 'Ошибка'; btn.disabled = false;
+        alert('Не удалось сохранить: ' + e.message);
+      }
+    });
+  });
+}
+
+// ==================== Детализация по товарам ====================
+
+async function loadDetail() {
+  const el = document.getElementById('content');
+  el.innerHTML = '<div class="state-msg">Загрузка…</div>';
+  if (!lastMarginData) {
+    try {
+      lastMarginData = await apiFetch(`/api/cabinets/${activeCabinetId}/margin?date_from=${periodFrom}&date_to=${periodTo}`);
+    } catch (e) {
+      el.innerHTML = `<div class="state-msg">Не удалось загрузить данные.<br>${e.message}</div>`;
+      return;
+    }
+  }
+  renderDetail(lastMarginData.products || []);
+}
+
+function renderDetail(products) {
+  const el = document.getElementById('content');
+  el.innerHTML = `
+    <input class="search-box" id="detailSearch" placeholder="Поиск по названию или артикулу…">
+    <div class="notice">За период ${lastMarginData.period_from} — ${lastMarginData.period_to} · ${products.length} товаров с продажами</div>
+    <div class="product-list" id="detailList"></div>
+  `;
+  const renderList = (items) => {
+    const listEl = document.getElementById('detailList');
+    const sorted = [...items].sort((a, b) => b.revenue - a.revenue);
+    const maxAbsProfit = Math.max(...sorted.map(p => Math.abs(p.profit)), 1);
+    listEl.innerHTML = sorted.map(p => productCardHtml(p, maxAbsProfit)).join('') || '<div class="state-msg">Ничего не найдено</div>';
+    bindCogsHandlers(listEl, loadDetail);
+  };
+  renderList(products);
+  document.getElementById('detailSearch').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    const filtered = q ? products.filter(p =>
+      (p.title || '').toLowerCase().includes(q) || String(p.offer_id || p.nm_id || '').toLowerCase().includes(q)
+    ) : products;
+    renderList(filtered);
+  });
+}
+
+// ==================== Цены ====================
+
+async function loadPricing() {
+  const el = document.getElementById('content');
+  const cabinet = activeCabinet();
+  if (!cabinet || cabinet.marketplace !== 'ozon') {
+    el.innerHTML = '<div class="state-msg">Управление ценами пока доступно только для кабинетов Ozon.</div>';
+    return;
+  }
+  el.innerHTML = '<div class="state-msg">Загрузка товаров…</div>';
+  try {
+    if (!pricingItems) {
+      const data = await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/pricing`);
+      pricingItems = data.items;
+    }
+    renderPricing(pricingItems);
+  } catch (e) {
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить цены.<br>${e.message}</div>`;
+  }
+}
+
+function computePriceRow(price, cogs, commissionPct, logisticsEstimate) {
+  const expensePerUnit = price * (commissionPct / 100) + logisticsEstimate;
+  const profit = price - cogs - expensePerUnit;
+  return { expensePerUnit, profit };
+}
+
+function suggestPrice(cogs, commissionPct, logisticsEstimate, targetMarginPct) {
+  // price - cogs - price*commissionPct/100 - logistics = price*targetMarginPct/100
+  const denom = 1 - commissionPct / 100 - targetMarginPct / 100;
+  if (denom <= 0) return null;
+  return (cogs + logisticsEstimate) / denom;
+}
+
+function renderPricing(items) {
+  const el = document.getElementById('content');
+  el.innerHTML = `
+    <input class="search-box" id="pricingSearch" placeholder="Поиск по названию или артикулу…">
+    <div class="product-list" id="pricingList"></div>
+  `;
+  const renderList = (list) => {
+    const listEl = document.getElementById('pricingList');
+    listEl.innerHTML = list.slice(0, 200).map(priceCardHtml).join('') || '<div class="state-msg">Ничего не найдено</div>';
+    listEl.querySelectorAll('.price-card').forEach(bindPriceCard);
+  };
+  renderList(items);
+  document.getElementById('pricingSearch').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    const filtered = q ? items.filter(i => (i.name||'').toLowerCase().includes(q) || (i.offer_id||'').toLowerCase().includes(q)) : items;
+    renderList(filtered);
+  });
+}
+
+function priceCardHtml(p) {
+  const staged = pendingPriceChanges[p.offer_id] !== undefined;
+  return `<div class="price-card ${staged ? 'staged' : ''}" data-offer="${p.offer_id}"
+      data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}">
+    <div class="p-name">${p.name}</div>
+    <div class="p-offer">${p.offer_id}</div>
+    <div class="price-fields">
+      <div class="price-field">
+        <label>Цена (без акций)</label>
+        <input type="number" class="price-input" value="${staged ? pendingPriceChanges[p.offer_id] : (p.min_price || p.price || '')}">
+      </div>
+      <div class="price-field">
+        <label>Себестоимость</label>
+        <input type="number" class="cogs-price-input" value="${p.cogs_unit || ''}" placeholder="0">
+      </div>
+    </div>
+    <div class="price-summary">
+      <span>Комиссия ${p.commission_pct}%</span>
+      <span class="expense-out">расход/шт. —</span>
+    </div>
+    <div class="price-profit-row">
+      <span class="pp-label">Прибыль со штуки</span>
+      <span class="pp-value profit-out">—</span>
+    </div>
+    <div class="price-suggest suggest-out"></div>
+    <div class="price-save-row"><button class="price-save-btn">Сохранить</button></div>
+  </div>`;
+}
+
+function bindPriceCard(card) {
+  const offerId = card.dataset.offer;
+  const commissionPct = parseFloat(card.dataset.commission) || 0;
+  const logisticsEstimate = parseFloat(card.dataset.logistics) || 0;
+  const priceInput = card.querySelector('.price-input');
+  const cogsInput = card.querySelector('.cogs-price-input');
+  const expenseOut = card.querySelector('.expense-out');
+  const profitOut = card.querySelector('.profit-out');
+  const suggestOut = card.querySelector('.suggest-out');
+  const saveBtn = card.querySelector('.price-save-btn');
+
+  function recalc() {
+    const price = parseFloat(priceInput.value) || 0;
+    const cogs = parseFloat(cogsInput.value) || 0;
+    const { expensePerUnit, profit } = computePriceRow(price, cogs, commissionPct, logisticsEstimate);
+    expenseOut.textContent = `расход/шт. ${fmtMoney(expensePerUnit)}`;
+    profitOut.textContent = fmtMoney(profit);
+    profitOut.classList.toggle('neg', profit < 0);
+    profitOut.classList.toggle('pos', profit >= 0);
+
+    if (profit < 0) {
+      const suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 15);
+      if (suggested && suggested > price) {
+        const { profit: newProfit } = computePriceRow(suggested, cogs, commissionPct, logisticsEstimate);
+        suggestOut.innerHTML = `Чтобы выйти в плюс: цена от <b>${fmtMoney(suggested)}</b> (прибыль ${fmtMoney(newProfit)})`;
+      } else {
+        suggestOut.textContent = '';
+      }
+      saveBtn.className = 'price-save-btn';
+      saveBtn.style.opacity = '0.4';
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Прибыль отрицательная';
+    } else {
+      suggestOut.textContent = '';
+      saveBtn.disabled = false;
+      saveBtn.style.opacity = '1';
+      const isStaged = pendingPriceChanges[offerId] !== undefined;
+      saveBtn.className = 'price-save-btn ' + (isStaged ? 'staged-btn' : 'pos');
+      saveBtn.textContent = isStaged ? 'В очереди на отправку ✓' : 'Сохранить';
+    }
+  }
+
+  priceInput.addEventListener('input', recalc);
+  cogsInput.addEventListener('input', recalc);
+
+  saveBtn.addEventListener('click', async () => {
+    const price = parseFloat(priceInput.value) || 0;
+    const cogs = parseFloat(cogsInput.value) || 0;
+    if (price <= 0) { alert('Укажи цену'); return; }
+    saveBtn.disabled = true; saveBtn.textContent = 'Сохранение…';
+    try {
+      if (cogs > 0) {
+        await apiFetch(`/api/cabinets/${activeCabinetId}/cost-prices`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prices: { [offerId]: cogs } }),
+        });
+      }
+      pendingPriceChanges[offerId] = price;
+      card.classList.add('staged');
+      updatePushBar();
+      recalc();
+    } catch (e) {
+      alert('Не удалось сохранить себестоимость: ' + e.message);
+      saveBtn.disabled = false;
+    }
+  });
+
+  recalc();
+}
+
+function updatePushBar() {
+  const bar = document.getElementById('pushBar');
+  const count = Object.keys(pendingPriceChanges).length;
+  document.getElementById('pushBarText').textContent = `Изменено цен: ${count}`;
+  bar.classList.toggle('show', count > 0);
+}
+
+async function pushPriceUpdates() {
+  const btn = document.getElementById('pushBarBtn');
+  const updates = Object.entries(pendingPriceChanges).map(([offer_id, price]) => ({ offer_id, price }));
+  if (!updates.length) return;
+  btn.disabled = true; btn.textContent = 'Отправляю…';
+  try {
+    await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/prices`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updates }),
+    });
+    pendingPriceChanges = {};
+    pricingItems = null;
+    updatePushBar();
+    btn.textContent = 'Отправить обновления';
+    btn.disabled = false;
+    loadPricing();
+  } catch (e) {
+    alert('Не удалось отправить обновления в Ozon: ' + e.message);
+    btn.textContent = 'Отправить обновления';
+    btn.disabled = false;
   }
 }
 
