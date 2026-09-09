@@ -97,6 +97,27 @@ def list_all_active_cabinets(marketplace: str = None) -> list:
         ]
 
 
+def get_admin_stats() -> dict:
+    """Every user with their connected cabinets (marketplace + display name,
+    no credentials) — for the bot's /admin command, not exposed via API."""
+    with SessionLocal() as session:
+        users = session.query(User).order_by(User.created_at).all()
+        result = []
+        for u in users:
+            cabs = session.query(Cabinet).filter_by(user_id=u.id, is_active=True).all()
+            result.append({
+                "telegram_user_id": u.telegram_user_id,
+                "first_name": u.first_name,
+                "username": u.username,
+                "created_at": u.created_at,
+                "cabinets": [
+                    {"marketplace": c.marketplace, "display_name": c.display_name, "last_synced_at": c.last_synced_at}
+                    for c in cabs
+                ],
+            })
+        return {"total_users": len(users), "users": result}
+
+
 def get_cost_prices(cabinet_id: int) -> dict:
     """offer_id (Ozon) / str(nm_id) (WB) -> cost price in RUB."""
     with SessionLocal() as session:

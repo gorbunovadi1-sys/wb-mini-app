@@ -1,12 +1,13 @@
 import asyncio
 import logging
+import os
 
 from dotenv import load_dotenv
 load_dotenv()  # must run before importing modules below that read env vars at import time
 
 import requests
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -74,6 +75,25 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
             f"ИИ Движок — управляй продажами на Wildberries и Ozon в одном месте.\n\n{_cabinets_text(user_id)}",
             reply_markup=_cabinets_kb(user_id, mini_app_url),
         )
+
+    @dp.message(Command("admin"))
+    async def admin_stats(message: Message):
+        admin_id = os.environ.get("ADMIN_TELEGRAM_ID")
+        if not admin_id or message.from_user.id != int(admin_id):
+            return  # silently ignore — don't reveal the command exists to non-admins
+        stats = cabinets.get_admin_stats()
+        lines = [f"Пользователей: {stats['total_users']}\n"]
+        for u in stats["users"]:
+            name = u["username"] and f"@{u['username']}" or (u["first_name"] or str(u["telegram_user_id"]))
+            if not u["cabinets"]:
+                lines.append(f"👤 {name} — кабинетов нет")
+                continue
+            lines.append(f"👤 {name}")
+            for c in u["cabinets"]:
+                label = c["display_name"] or MARKETPLACE_LABELS.get(c["marketplace"], c["marketplace"])
+                synced = c["last_synced_at"].strftime("%d.%m %H:%M") if c["last_synced_at"] else "—"
+                lines.append(f"   • {label} ({MARKETPLACE_LABELS.get(c['marketplace'], c['marketplace'])}), синк: {synced}")
+        await message.answer("\n".join(lines))
 
     @dp.callback_query(F.data == "connect_wb")
     async def connect_wb(callback: CallbackQuery, state: FSMContext):
