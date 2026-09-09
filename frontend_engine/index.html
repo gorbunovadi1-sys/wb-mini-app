@@ -24,22 +24,54 @@ html, body { height: 100%; }
 body { font-family: var(--font); background: var(--bg); color: var(--text); font-size: 14px; }
 
 .topbar {
-  position: sticky; top: 0; z-index: 20; padding: 16px; background: var(--bg); border-bottom: 1px solid var(--border);
+  position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px; background: var(--bg); border-bottom: 1px solid var(--border);
 }
-.topbar h1 { font-size: 17px; font-weight: 700; }
-.topbar .sub { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .08em; margin-top: 2px; }
+.icon-btn {
+  width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); display: flex; align-items: center; justify-content: center;
+  font-size: 16px; cursor: pointer; flex: none;
+}
+.topbar .title-block { flex: 1; min-width: 0; }
+.topbar h1 { font-size: 16px; font-weight: 700; }
+.topbar .sub { font-size: 10.5px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .06em; margin-top: 2px; }
 
 main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-width: 720px; margin: 0 auto; padding-bottom: 90px; }
 
-.cabinet-tabs, .view-tabs { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 2px; }
-.cabinet-tabs button, .view-tabs button {
-  flex: none; padding: 8px 14px; border-radius: 20px; border: 1px solid var(--border);
-  background: var(--surface); color: var(--text-secondary); font-family: var(--font); font-size: 12.5px; font-weight: 600;
-  cursor: pointer; white-space: nowrap;
+.cabinet-select-wrap { position: relative; }
+.cabinet-select {
+  width: 100%; appearance: none; background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 10px 34px 10px 14px; color: var(--text); font-family: var(--font); font-size: 13px; font-weight: 600; cursor: pointer;
 }
-.cabinet-tabs button.active, .view-tabs button.active { background: var(--accent); color: var(--accent-text-on); border-color: var(--accent); }
-.view-tabs { display: none; }
-.view-tabs.show { display: flex; }
+.cabinet-select-wrap::after {
+  content: '▾'; position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  color: var(--text-secondary); pointer-events: none; font-size: 12px;
+}
+
+/* ---- Drawer nav ---- */
+.scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 29; opacity: 0; pointer-events: none; transition: opacity .2s ease; }
+.scrim.open { opacity: 1; pointer-events: auto; }
+.drawer {
+  position: fixed; top: 0; left: 0; bottom: 0; width: 230px; z-index: 30;
+  background: var(--surface); border-right: 1px solid var(--border);
+  transform: translateX(-100%); transition: transform .25s ease;
+  display: flex; flex-direction: column; padding: 18px 14px;
+}
+.drawer.open { transform: translateX(0); }
+.drawer .brand { display: flex; align-items: center; gap: 10px; padding: 6px 8px 20px; }
+.drawer .brand-mark {
+  width: 32px; height: 32px; border-radius: 9px; background: var(--accent-dim); color: var(--accent);
+  display: flex; align-items: center; justify-content: center; font-weight: 700; font-family: var(--font-mono); font-size: 14px;
+}
+.drawer .brand-name { font-weight: 700; font-size: 13.5px; }
+.drawer nav { display: flex; flex-direction: column; gap: 2px; }
+.drawer nav button {
+  display: flex; align-items: center; gap: 11px; text-align: left;
+  padding: 10px 12px; border-radius: 10px; border: none; background: none;
+  color: var(--text-secondary); font-family: var(--font); font-size: 13.5px; font-weight: 500; cursor: pointer;
+}
+.drawer nav button .ic { font-size: 15px; width: 18px; text-align: center; }
+.drawer nav button.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
 
 .period-row { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
 .kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -145,17 +177,30 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 </head>
 <body>
 
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer">
+  <div class="brand">
+    <div class="brand-mark">ИИ</div>
+    <div class="brand-name">ИИ Движок</div>
+  </div>
+  <nav id="viewNav">
+    <button data-view="dashboard" class="active"><span class="ic">◆</span>Дашборд</button>
+    <button data-view="detail"><span class="ic">▤</span>Детализация</button>
+    <button data-view="pricing"><span class="ic">₽</span>Цены</button>
+  </nav>
+</aside>
+
 <header class="topbar">
-  <h1>ИИ Движок</h1>
-  <div class="sub" id="topbarSub">выбери кабинет</div>
+  <button class="icon-btn" id="menuBtn">☰</button>
+  <div class="title-block">
+    <h1 id="viewTitle">Дашборд</h1>
+    <div class="sub" id="topbarSub">выбери кабинет</div>
+  </div>
 </header>
 
 <main>
-  <div class="cabinet-tabs" id="cabinetTabs"></div>
-  <div class="view-tabs" id="viewTabs">
-    <button data-view="dashboard" class="active">Дашборд</button>
-    <button data-view="detail">Детализация</button>
-    <button data-view="pricing">Цены</button>
+  <div class="cabinet-select-wrap">
+    <select class="cabinet-select" id="cabinetSelect"></select>
   </div>
   <div id="content"><div class="state-msg">Загрузка…</div></div>
 </main>
@@ -210,6 +255,8 @@ let lastMarginData = null;
 let pricingItems = null;
 let pendingPriceChanges = {}; // offer_id -> price
 
+const VIEW_TITLES = { dashboard: 'Дашборд', detail: 'Детализация', pricing: 'Цены' };
+
 async function boot() {
   try {
     const data = await apiFetch('/api/me/cabinets');
@@ -218,11 +265,21 @@ async function boot() {
     document.getElementById('content').innerHTML = `<div class="state-msg">Не удалось загрузить кабинеты.<br>${e.message}</div>`;
     return;
   }
-  renderCabinetTabs();
-  document.querySelectorAll('#viewTabs button').forEach(btn => {
+
+  const drawer = document.getElementById('drawer');
+  const scrim = document.getElementById('scrim');
+  document.getElementById('menuBtn').addEventListener('click', () => {
+    drawer.classList.add('open'); scrim.classList.add('open');
+  });
+  scrim.addEventListener('click', () => {
+    drawer.classList.remove('open'); scrim.classList.remove('open');
+  });
+  document.querySelectorAll('#viewNav button').forEach(btn => {
     btn.addEventListener('click', () => {
       activeView = btn.dataset.view;
-      document.querySelectorAll('#viewTabs button').forEach(b => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('#viewNav button').forEach(b => b.classList.toggle('active', b === btn));
+      document.getElementById('viewTitle').textContent = VIEW_TITLES[activeView];
+      drawer.classList.remove('open'); scrim.classList.remove('open');
       loadView();
     });
   });
@@ -230,27 +287,24 @@ async function boot() {
 
   if (cabinetsList.length) {
     activeCabinetId = cabinetsList[0].id;
-    document.getElementById('viewTabs').classList.add('show');
+    renderCabinetSelect();
     loadView();
   } else {
     document.getElementById('content').innerHTML = `<div class="state-msg"><b>Кабинеты пока не подключены.</b><br>Вернись в чат с ботом и нажми «Подключить Wildberries» или «Подключить Ozon».</div>`;
   }
 }
 
-function renderCabinetTabs() {
-  const el = document.getElementById('cabinetTabs');
+function renderCabinetSelect() {
+  const el = document.getElementById('cabinetSelect');
   const marketLabel = { wb: 'WB', ozon: 'Ozon' };
   el.innerHTML = cabinetsList.map(c => `
-    <button data-id="${c.id}" class="${c.id === activeCabinetId ? 'active' : ''}">${c.display_name || marketLabel[c.marketplace] || c.marketplace}</button>
+    <option value="${c.id}" ${c.id === activeCabinetId ? 'selected' : ''}>${c.display_name || marketLabel[c.marketplace] || c.marketplace}</option>
   `).join('');
-  el.querySelectorAll('button').forEach(btn => {
-    btn.addEventListener('click', () => {
-      activeCabinetId = parseInt(btn.dataset.id, 10);
-      renderCabinetTabs();
-      lastMarginData = null; pricingItems = null; pendingPriceChanges = {};
-      updatePushBar();
-      loadView();
-    });
+  el.addEventListener('change', () => {
+    activeCabinetId = parseInt(el.value, 10);
+    lastMarginData = null; pricingItems = null; pendingPriceChanges = {};
+    updatePushBar();
+    loadView();
   });
 }
 
