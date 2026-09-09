@@ -84,11 +84,11 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
         stats = cabinets.get_admin_stats()
         lines = [f"Пользователей: {stats['total_users']}\n"]
         for u in stats["users"]:
-            name = u["username"] and f"@{u['username']}" or (u["first_name"] or str(u["telegram_user_id"]))
+            name = u["username"] and f"@{u['username']}" or (u["first_name"] or "без имени")
             if not u["cabinets"]:
-                lines.append(f"👤 {name} — кабинетов нет")
+                lines.append(f"👤 {name} (id {u['telegram_user_id']}) — кабинетов нет")
                 continue
-            lines.append(f"👤 {name}")
+            lines.append(f"👤 {name} (id {u['telegram_user_id']})")
             for c in u["cabinets"]:
                 label = c["display_name"] or MARKETPLACE_LABELS.get(c["marketplace"], c["marketplace"])
                 synced = c["last_synced_at"].strftime("%d.%m %H:%M") if c["last_synced_at"] else "—"
