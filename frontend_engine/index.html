@@ -626,13 +626,13 @@ function renderPricing(items) {
 function priceCardHtml(p) {
   const staged = pendingPriceChanges[p.offer_id] !== undefined;
   return `<div class="price-card ${staged ? 'staged' : ''}" data-offer="${p.offer_id}"
-      data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}">
+      data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-old-price="${p.old_price || 0}">
     <div class="p-name">${p.name}</div>
     <div class="p-offer">${p.offer_id}</div>
     <div class="price-fields">
       <div class="price-field">
         <label>Цена (без акций)</label>
-        <input type="number" class="price-input" value="${staged ? pendingPriceChanges[p.offer_id] : (p.min_price || p.price || '')}">
+        <input type="number" class="price-input" value="${staged ? pendingPriceChanges[p.offer_id].price : (p.min_price || p.price || '')}">
       </div>
       <div class="price-field">
         <label>Себестоимость</label>
@@ -656,6 +656,7 @@ function bindPriceCard(card) {
   const offerId = card.dataset.offer;
   const commissionPct = parseFloat(card.dataset.commission) || 0;
   const logisticsEstimate = parseFloat(card.dataset.logistics) || 0;
+  const oldPriceOriginal = parseFloat(card.dataset.oldPrice) || 0;
   const priceInput = card.querySelector('.price-input');
   const cogsInput = card.querySelector('.cogs-price-input');
   const expenseOut = card.querySelector('.expense-out');
@@ -710,7 +711,12 @@ function bindPriceCard(card) {
           body: JSON.stringify({ prices: { [offerId]: cogs } }),
         });
       }
-      pendingPriceChanges[offerId] = price;
+      // Ozon requires price <= old_price (old_price is the pre-discount
+      // reference shown crossed out) — if the new price exceeds it, bump
+      // old_price to match so there's simply no discount shown, instead of
+      // Ozon silently rejecting the whole update ("Old price is less than price").
+      const oldPriceToSend = Math.max(oldPriceOriginal, price);
+      pendingPriceChanges[offerId] = { price, old_price: oldPriceToSend };
       card.classList.add('staged');
       updatePushBar();
       recalc();
@@ -732,7 +738,7 @@ function updatePushBar() {
 
 async function pushPriceUpdates() {
   const btn = document.getElementById('pushBarBtn');
-  const updates = Object.entries(pendingPriceChanges).map(([offer_id, price]) => ({ offer_id, price }));
+  const updates = Object.entries(pendingPriceChanges).map(([offer_id, v]) => ({ offer_id, price: v.price, old_price: v.old_price }));
   if (!updates.length) return;
   btn.disabled = true; btn.textContent = 'Отправляю…';
   try {
