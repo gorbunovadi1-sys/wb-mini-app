@@ -1,11 +1,28 @@
 import os
+import re
 import time
 import logging
 import requests
 
 log = logging.getLogger("wb_client")
 
-WB_API_KEY = os.environ["WB_API_KEY"]
+
+def _sanitize_key(raw: str) -> str:
+    """WB API keys are JWTs (base64url segments joined by dots), so only
+    A-Z a-z 0-9 . _ - are ever valid. Strips anything else — guards against
+    stray whitespace/invisible characters that can sneak in via a hosting
+    provider's env-var UI (seen: a UnicodeEncodeError from a corrupted
+    Railway-stored value that broke HTTP header encoding)."""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "", raw)
+    if cleaned != raw.strip():
+        log.warning(
+            f"WB_API_KEY contained unexpected characters and was sanitized "
+            f"(raw len={len(raw)}, cleaned len={len(cleaned)})"
+        )
+    return cleaned
+
+
+WB_API_KEY = _sanitize_key(os.environ["WB_API_KEY"])
 H = {"Authorization": WB_API_KEY, "Content-Type": "application/json"}
 
 FINANCE_BASE = "https://finance-api.wildberries.ru"
