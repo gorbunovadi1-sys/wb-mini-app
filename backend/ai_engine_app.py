@@ -20,6 +20,7 @@ from . import ozon_pricing
 from . import ozon_promo_guard
 from . import ozon_promotions
 from . import ozon_promotions_detail
+from . import wb_ads
 from .db import init_db
 from .ozon_client import OzonClient
 from .telegram_auth import parse_init_data_user, validate_init_data
@@ -411,6 +412,25 @@ def update_cabinet_settings(
     user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
     _owned_cabinet_or_404(cabinet_id, user_id)
     return cabinets.update_cabinet_settings(cabinet_id, body)
+
+
+@app.get("/api/cabinets/{cabinet_id}/ads")
+def get_cabinet_ads(
+    cabinet_id: int,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+    days: int = 30,
+):
+    days = max(7, min(days, 90))
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
+    client = _build_client(cabinet)
+    if cabinet["marketplace"] == "wb":
+        return wb_ads.get_campaigns_summary(client, days=days)
+    raise HTTPException(
+        status_code=400,
+        detail="Реклама Ozon требует отдельные ключи Ozon Performance API — ещё не подключены",
+    )
 
 
 @app.get("/api/cabinets/{cabinet_id}/ozon/dimensions")

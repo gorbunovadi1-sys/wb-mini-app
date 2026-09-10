@@ -1,3 +1,4 @@
+import datetime
 import os
 import re
 import time
@@ -118,18 +119,47 @@ class WBClient:
         return ids
 
     def get_campaign_fullstats(self, advert_ids, date_from, date_to):
-        results = []
-        for i in range(0, len(advert_ids), 50):
-            chunk = advert_ids[i:i + 50]
-            r = requests.get(
-                f"{ADVERT_BASE}/adv/v3/fullstats",
-                headers=self.headers, params={"ids": ",".join(map(str, chunk)), "beginDate": date_from, "endDate": date_to},
-                timeout=60,
-            )
-            if r.status_code == 200:
-                results.extend(r.json())
-            time.sleep(0.3)
-        return results
+        """GET /adv/v3/fullstats, batched by advert_ids (50/call) AND by date
+        range — WB hard-caps a single call to a 31-day window ("max date
+        range 31 days"), so a longer request is split into <=31-day windows
+        and the per-campaign raw counts summed across them; rate fields
+        (ctr/cpc/cr) are recomputed from the summed counts rather than
+        averaged, since averaging percentages across periods is wrong."""
+        d_from = datetime.date.fromisoformat(date_from)
+        d_to = datetime.date.fromisoformat(date_to)
+        windows = []
+        cur = d_from
+        while cur <= d_to:
+            window_end = min(cur + datetime.timedelta(days=30), d_to)
+            windows.append((cur.isoformat(), window_end.isoformat()))
+            cur = window_end + datetime.timedelta(days=1)
+
+        merged = {}
+        sum_fields = ("sum", "sum_price", "views", "clicks", "orders", "atbs", "canceled", "shks")
+        for w_from, w_to in windows:
+            for i in range(0, len(advert_ids), 50):
+                chunk = advert_ids[i:i + 50]
+                params = {"ids": ",".join(map(str, chunk)), "beginDate": w_from, "endDate": w_to}
+                for attempt in range(4):
+                    r = requests.get(f"{ADVERT_BASE}/adv/v3/fullstats", headers=self.headers, params=params, timeout=60)
+                    if r.status_code != 429:
+                        break
+                    retry_after = int(r.headers.get("Retry-After", 20))
+                    log.warning(f"429 from advert fullstats, retrying in {retry_after}s (attempt {attempt + 1})")
+                    time.sleep(retry_after)
+                r.raise_for_status()
+                for s in r.json():
+                    aid = s.get("advertId")
+                    m = merged.setdefault(aid, {"advertId": aid, "currency": s.get("currency"), **{k: 0 for k in sum_fields}})
+                    for k in sum_fields:
+                        m[k] += s.get(k, 0) or 0
+                time.sleep(0.3)
+
+        for m in merged.values():
+            m["ctr"] = round(m["clicks"] / m["views"] * 100, 2) if m["views"] else 0
+            m["cpc"] = round(m["sum"] / m["clicks"], 2) if m["clicks"] else 0
+            m["cr"] = round(m["orders"] / m["clicks"] * 100, 2) if m["clicks"] else 0
+        return list(merged.values())
 
     def get_campaign_details(self, advert_ids):
         results = []

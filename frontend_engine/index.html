@@ -115,6 +115,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
   flex: 1; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-secondary);
   font-family: var(--font); font-size: 11px; font-weight: 600; padding: 5px 0; border-radius: 7px; cursor: pointer;
 }
+.quick-chips button.active-chip { background: var(--accent-gradient); color: var(--accent-text-on); border-color: transparent; }
 
 .product-list { display: flex; flex-direction: column; gap: 10px; }
 .product-card .product-top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 6px; min-width: 0; }
@@ -239,6 +240,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
     <button data-view="pricing"><span class="ic">₽</span>Цены</button>
     <button data-view="stock"><span class="ic">📦</span>Остатки</button>
     <button data-view="actions"><span class="ic">🏷</span>Акции</button>
+    <button data-view="ads"><span class="ic">📣</span>Реклама</button>
   </nav>
 </aside>
 
@@ -323,7 +325,7 @@ let pricingItems = null;
 let pendingPriceChanges = {}; // offer_id -> price
 let stockItems = null;
 
-const VIEW_TITLES = { dashboard: 'Дашборд', analytics: 'Аналитика', detail: 'Детализация', pricing: 'Цены', stock: 'Остатки', actions: 'Акции' };
+const VIEW_TITLES = { dashboard: 'Дашборд', analytics: 'Аналитика', detail: 'Детализация', pricing: 'Цены', stock: 'Остатки', actions: 'Акции', ads: 'Реклама' };
 
 async function boot() {
   try {
@@ -429,6 +431,7 @@ function loadView() {
   if (activeView === 'pricing') return loadPricing();
   if (activeView === 'stock') return loadStock();
   if (activeView === 'actions') return loadActions();
+  if (activeView === 'ads') return loadAds();
 }
 
 // ==================== Dashboard ====================
@@ -1384,6 +1387,102 @@ async function onRemoveClick(e) {
     alert('Не удалось убрать: ' + err.message);
     btn.disabled = false; btn.textContent = 'Убрать из акции';
   }
+}
+
+// ==================== Реклама ====================
+
+let adsDays = 30;
+
+async function loadAds() {
+  const el = document.getElementById('content');
+  const cabinet = activeCabinet();
+  if (!cabinet || cabinet.marketplace !== 'wb') {
+    el.innerHTML = '<div class="state-msg">Реклама Ozon пока недоступна — нужны отдельные ключи Ozon Performance API. Для Wildberries уже работает.</div>';
+    return;
+  }
+  const reqView = activeView, reqCabinet = activeCabinetId;
+  el.innerHTML = '<div class="state-msg">Загрузка рекламных кампаний…</div>';
+  try {
+    const data = await apiFetch(`/api/cabinets/${activeCabinetId}/ads?days=${adsDays}`);
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
+    renderAds(data);
+  } catch (e) {
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить рекламу.<br>${e.message}</div>`;
+  }
+}
+
+function renderAds(data) {
+  const el = document.getElementById('content');
+  const t = data.totals;
+  const drrClass = (drr) => drr === null ? '' : (drr > 20 ? 'neg' : 'pos');
+  el.innerHTML = `
+    <div class="card">
+      <h3>Период</h3>
+      <div class="quick-chips">
+        <button data-days="7" class="${adsDays === 7 ? 'active-chip' : ''}">7 дн.</button>
+        <button data-days="14" class="${adsDays === 14 ? 'active-chip' : ''}">14 дн.</button>
+        <button data-days="30" class="${adsDays === 30 ? 'active-chip' : ''}">30 дн.</button>
+        <button data-days="90" class="${adsDays === 90 ? 'active-chip' : ''}">90 дн.</button>
+      </div>
+    </div>
+    <div class="notice" style="margin-bottom:2px">За период ${data.period_from} — ${data.period_to} · ${data.campaigns.length} кампани(й)</div>
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="k">Расход на рекламу</div>
+        <div class="v">${fmtMoney(t.spend)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="k">Выручка по рекламе</div>
+        <div class="v">${fmtMoney(t.revenue)}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="k">ДРР</div>
+        <div class="v ${drrClass(t.drr)}">${t.drr !== null ? t.drr.toFixed(1) + '%' : '—'}</div>
+        <div class="kpi-sub">доля рекламных расходов в выручке</div>
+      </div>
+      <div class="kpi-card">
+        <div class="k">Заказы по рекламе</div>
+        <div class="v">${fmtNum(t.orders)}</div>
+        <div class="kpi-sub">${fmtNum(t.clicks)} кликов · ${fmtNum(t.views)} показов</div>
+      </div>
+    </div>
+    <input class="search-box" id="adsSearch" placeholder="Поиск по кампании…">
+    <div class="product-list" id="adsList"></div>
+  `;
+  document.querySelectorAll('.quick-chips button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      adsDays = parseInt(btn.dataset.days, 10);
+      loadAds();
+    });
+  });
+  const searchEl = document.getElementById('adsSearch');
+  const renderList = () => {
+    const q = searchEl.value.trim().toLowerCase();
+    const list = q ? data.campaigns.filter(c => (c.name || '').toLowerCase().includes(q)) : data.campaigns;
+    document.getElementById('adsList').innerHTML = list.map(adCardHtml).join('') || '<div class="state-msg">Нет активных кампаний за период</div>';
+  };
+  renderList();
+  searchEl.addEventListener('input', renderList);
+}
+
+function adCardHtml(c) {
+  const drrClass = c.drr === null ? '' : (c.drr > 20 ? 'neg' : 'pos');
+  return `<div class="price-card">
+    <div class="p-name">${c.name}</div>
+    <div class="price-summary">
+      <span>Расход: ${fmtMoney(c.spend)}</span>
+      <span>Выручка: ${fmtMoney(c.revenue)}</span>
+    </div>
+    <div class="price-profit-row">
+      <span class="pp-label">ДРР</span>
+      <span class="pp-value ${drrClass}">${c.drr !== null ? c.drr.toFixed(1) + '%' : '—'}</span>
+    </div>
+    <div class="price-summary">
+      <span>Заказы: ${fmtNum(c.orders)}</span>
+      <span>CTR: ${c.ctr}% · CPC: ${fmtMoney(c.cpc)}</span>
+    </div>
+  </div>`;
 }
 
 document.addEventListener('click', async (e) => {
