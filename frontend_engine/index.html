@@ -369,7 +369,7 @@ async function boot() {
 function marketplaceCabinets(mp) { return cabinetsList.filter(c => c.marketplace === mp); }
 
 function resetCabinetCaches() {
-  lastMarginData = null; pricingItems = null; pendingPriceChanges = {}; stockItems = null; wbPricingItems = null;
+  lastMarginData = null; pricingItems = null; pendingPriceChanges = {}; stockItems = null; wbPricingItems = null; wbStockItems = null;
   updatePushBar();
 }
 
@@ -1131,10 +1131,11 @@ async function pushPriceUpdates() {
 // ==================== Остатки ====================
 
 async function loadStock() {
-  const el = document.getElementById('content');
   const cabinet = activeCabinet();
+  if (cabinet && cabinet.marketplace === 'wb') return loadStockWB();
+  const el = document.getElementById('content');
   if (!cabinet || cabinet.marketplace !== 'ozon') {
-    el.innerHTML = '<div class="state-msg">Остатки пока доступны только для кабинетов Ozon.</div>';
+    el.innerHTML = '<div class="state-msg">Кабинет не выбран.</div>';
     return;
   }
   if (stockItems) return renderStock(stockItems);
@@ -1213,6 +1214,68 @@ function stockCardHtml(p) {
       <span class="pp-value ${urgent ? 'neg' : 'pos'}">${daysLeftText}</span>
     </div>
     ${p.recommendedRestock > 0 ? `<div class="price-suggest">Рекомендую поставить ещё <b>${fmtNum(p.recommendedRestock)} шт.</b></div>` : ''}
+  </div>`;
+}
+
+let wbStockItems = null;
+
+async function loadStockWB() {
+  const el = document.getElementById('content');
+  if (wbStockItems) return renderStockWB(wbStockItems);
+  const reqView = activeView, reqCabinet = activeCabinetId;
+  el.innerHTML = '<div class="state-msg">Загрузка остатков FBO и продаж за 30 дней… у WB это может занять 1-2 минуты (асинхронный отчёт)</div>';
+  try {
+    const data = await apiFetch(`/api/cabinets/${activeCabinetId}/wb/stock`);
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
+    wbStockItems = data.items;
+    renderStockWB(wbStockItems);
+  } catch (e) {
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить остатки.<br>${e.message}</div>`;
+  }
+}
+
+function renderStockWB(items) {
+  const el = document.getElementById('content');
+  el.innerHTML = `
+    <div class="notice" style="margin-bottom:2px">Остатки FBO (склады WB) · продажи за последние 30 дней. FBS-остатки для WB пока не подключены.</div>
+    <input class="search-box" id="wbStockSearch" placeholder="Поиск по названию или артикулу…">
+    <div class="product-list" id="wbStockList"></div>
+  `;
+  const searchEl = document.getElementById('wbStockSearch');
+  const renderList = () => {
+    const q = searchEl.value.trim().toLowerCase();
+    let list = q
+      ? items.filter(i => (i.title || '').toLowerCase().includes(q) || (i.vendor_code || '').toLowerCase().includes(q))
+      : items.slice();
+    list.sort((a, b) => {
+      const aLeft = a.days_left === null ? Infinity : a.days_left;
+      const bLeft = b.days_left === null ? Infinity : b.days_left;
+      return aLeft - bLeft;
+    });
+    document.getElementById('wbStockList').innerHTML = list.slice(0, 300).map(wbStockCardHtml).join('') || '<div class="state-msg">Ничего не найдено</div>';
+  };
+  renderList();
+  searchEl.addEventListener('input', renderList);
+}
+
+function wbStockCardHtml(p) {
+  const urgent = p.days_left !== null && p.days_left < 14;
+  const daysLeftText = p.days_left === null
+    ? (p.fbo_stock > 0 ? 'нет продаж' : 'нет остатка')
+    : `≈${Math.floor(p.days_left)} дн.`;
+  return `<div class="price-card">
+    <div class="p-name">${p.title}</div>
+    <div class="p-offer copy-chip" data-copy="${p.vendor_code || p.nm_id}">${p.vendor_code || p.nm_id}</div>
+    <div class="price-summary">
+      <span>Остаток FBO: ${fmtNum(p.fbo_stock || 0)}</span>
+      <span>Продажи 30дн: ${fmtNum(p.qty30)} шт.</span>
+    </div>
+    <div class="price-profit-row">
+      <span class="pp-label">Хватит на</span>
+      <span class="pp-value ${urgent ? 'neg' : 'pos'}">${daysLeftText}</span>
+    </div>
+    ${p.recommended_restock > 0 ? `<div class="price-suggest">Рекомендую поставить ещё <b>${fmtNum(p.recommended_restock)} шт.</b></div>` : ''}
   </div>`;
 }
 
@@ -1379,24 +1442,33 @@ function inActionCardHtml(p) {
 
 function candidateCardHtml(p) {
   const suggested = p.max_action_price || p.price || 0;
-  return `<div class="price-card" data-pid="${p.product_id}" data-cogs="${p.cogs_unit}" data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}">
+  // p.offer_id is only ever '' when the backend couldn't match this candidate
+  // to our own price/commission data — computing a "profit" in that case would
+  // silently use commission=0/logistics=0/cogs=0, i.e. show price itself as
+  // profit. Treat it as unknown instead, and don't offer to add it blind.
+  const hasInfo = !!p.offer_id;
+  return `<div class="price-card" data-pid="${p.product_id}" data-has-info="${hasInfo ? '1' : '0'}"
+      data-cogs="${p.cogs_unit}" data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}">
     <div class="p-name">${p.name}</div>
-    <div class="p-offer copy-chip" data-copy="${p.offer_id}">${p.offer_id}</div>
+    <div class="p-offer copy-chip" data-copy="${p.offer_id || p.product_id}">${p.offer_id || p.product_id}</div>
     <div class="price-fields">
       <div class="price-field">
         <label>Цена по акции (макс. ${fmtMoney(p.max_action_price || 0)})</label>
-        <input type="number" class="cand-price-input" value="${suggested}">
+        <input type="number" class="cand-price-input" value="${suggested}" ${hasInfo ? '' : 'disabled'}>
       </div>
     </div>
     <div class="price-profit-row">
       <span class="pp-label">Прибыль по этой цене</span>
-      <span class="pp-value cand-profit-out">—</span>
+      <span class="pp-value cand-profit-out">${hasInfo ? '—' : 'нет данных'}</span>
     </div>
-    <div class="price-save-row"><button class="price-save-btn action-add-btn" data-pid="${p.product_id}">Добавить в акцию</button></div>
+    ${hasInfo
+      ? `<div class="price-save-row"><button class="price-save-btn action-add-btn" data-pid="${p.product_id}">Добавить в акцию</button></div>`
+      : `<div class="price-suggest">Нет данных о цене/комиссии для этого товара — прибыль не оценить, добавление отключено.</div>`}
   </div>`;
 }
 
 function recalcCandProfit(card) {
+  if (card.dataset.hasInfo === '0') return; // "нет данных" already rendered, nothing to compute
   const priceInput = card.querySelector('.cand-price-input');
   const out = card.querySelector('.cand-profit-out');
   if (!priceInput || !out) return;

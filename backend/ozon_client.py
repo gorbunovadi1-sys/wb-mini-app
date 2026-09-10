@@ -34,19 +34,28 @@ class OzonClient:
         }
 
     def _post(self, path, payload, timeout=60):
-        for attempt in range(5):
+        r = None
+        for attempt in range(8):
             r = requests.post(f"{BASE}{path}", headers=self.headers, json=payload, timeout=timeout)
             if r.status_code != 429:
                 r.raise_for_status()
                 return r.json()
-            retry_after = int(r.headers.get("Retry-After", 5))
+            retry_after = int(r.headers.get("Retry-After") or min(5 * (attempt + 1), 30))
             log.warning(f"429 from {path}, retrying in {retry_after}s (attempt {attempt + 1})")
             time.sleep(retry_after)
         r.raise_for_status()
         return r.json()
 
     def _get(self, path, timeout=30):
-        r = requests.get(f"{BASE}{path}", headers=self.headers, timeout=timeout)
+        r = None
+        for attempt in range(8):
+            r = requests.get(f"{BASE}{path}", headers=self.headers, timeout=timeout)
+            if r.status_code != 429:
+                r.raise_for_status()
+                return r.json()
+            retry_after = int(r.headers.get("Retry-After") or min(5 * (attempt + 1), 30))
+            log.warning(f"429 from {path}, retrying in {retry_after}s (attempt {attempt + 1})")
+            time.sleep(retry_after)
         r.raise_for_status()
         return r.json()
 
