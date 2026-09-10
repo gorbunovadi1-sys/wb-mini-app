@@ -38,16 +38,15 @@ class WBClient:
         self.headers = {"Authorization": self.api_key, "Content-Type": "application/json"}
         self._last_finance_call = 0.0
 
-    def check_credentials(self):
-        """Cheap call used to validate a key during cabinet onboarding.
-        Raises requests.HTTPError (401/403) if the key is wrong."""
-        r = requests.get(f"{ADVERT_BASE}/adv/v1/promotion/count", headers=self.headers, timeout=15)
-        r.raise_for_status()
-
     def get_seller_info(self):
         """GET /api/v1/seller-info — tradeMark is the shop's storefront brand
-        name (e.g. "Техника для жизни"), name is the legal entity; used to
-        auto-label a connected cabinet instead of a generic "Wildberries"."""
+        name (e.g. "Техника для жизни"), name is the legal entity; used both
+        to auto-label a connected cabinet and, during onboarding, as the
+        credential check itself (raises requests.HTTPError on a bad key).
+        Deliberately not using an advert-api endpoint for that — advert-api
+        needs the key's "Реклама" category specifically enabled and has been
+        observed timing out/erroring on its own, which would make a
+        perfectly valid key look rejected during onboarding."""
         r = requests.get(f"{COMMON_BASE}/api/v1/seller-info", headers=self.headers, timeout=15)
         r.raise_for_status()
         return r.json()

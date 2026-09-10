@@ -213,21 +213,16 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
         api_key = message.text.strip()
         checking = await message.answer("Проверяю ключ…")
         client = WBClient(api_key)
+        display_name = "Wildberries"
         try:
-            await asyncio.to_thread(client.check_credentials)
+            info = await asyncio.to_thread(client.get_seller_info)
+            display_name = info.get("tradeMark") or info.get("name") or display_name
         except requests.HTTPError:
             await checking.edit_text("Ключ не подошёл — WB его не принял. Проверь и пришли ещё раз.")
             return
         except requests.RequestException as e:
             await checking.edit_text(f"Не получилось достучаться до WB API, попробуй ещё раз чуть позже.\n{e}")
             return
-
-        display_name = "Wildberries"
-        try:
-            info = await asyncio.to_thread(client.get_seller_info)
-            display_name = info.get("tradeMark") or info.get("name") or display_name
-        except requests.RequestException:
-            log.warning("Could not fetch WB seller-info for display name, using default")
 
         user_id = cabinets.get_or_create_user(message.from_user.id, message.from_user.first_name, message.from_user.username)
         cabinets.add_cabinet(user_id, "wb", {"api_key": api_key}, display_name=display_name)
