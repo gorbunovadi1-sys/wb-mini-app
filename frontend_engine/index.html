@@ -41,6 +41,14 @@ body { font-family: var(--font); background: var(--bg); color: var(--text); font
 
 main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-width: 720px; margin: 0 auto; padding-bottom: 90px; }
 
+.marketplace-toggle { display: flex; gap: 8px; }
+.marketplace-toggle button {
+  flex: 1; border: 1px solid var(--border); background: var(--surface); color: var(--text-secondary);
+  font-family: var(--font); font-size: 13px; font-weight: 700; padding: 11px 0; border-radius: 10px; cursor: pointer;
+}
+.marketplace-toggle button.active { background: var(--accent-gradient); color: var(--accent-text-on); box-shadow: var(--glow); border-color: transparent; }
+.marketplace-toggle button:disabled { opacity: 0.4; cursor: not-allowed; }
+
 .cabinet-select-wrap { position: relative; }
 .cabinet-select {
   width: 100%; appearance: none; background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
@@ -221,6 +229,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 </header>
 
 <main>
+  <div class="marketplace-toggle" id="marketplaceToggle"></div>
   <div class="cabinet-select-wrap">
     <select class="cabinet-select" id="cabinetSelect"></select>
   </div>
@@ -283,6 +292,7 @@ function deltaHtml(cmp) {
 
 let cabinetsList = [];
 let activeCabinetId = null;
+let activeMarketplace = 'wb';
 let activeView = 'dashboard';
 let periodFrom = isoDate(new Date(Date.now() - 29 * 86400000));
 let periodTo = isoDate(new Date());
@@ -322,7 +332,9 @@ async function boot() {
   document.getElementById('pushBarBtn').addEventListener('click', pushPriceUpdates);
 
   if (cabinetsList.length) {
-    activeCabinetId = cabinetsList[0].id;
+    activeMarketplace = cabinetsList[0].marketplace;
+    renderMarketplaceToggle();
+    selectFirstCabinetInMarketplace();
     renderCabinetSelect();
     loadView();
   } else {
@@ -330,25 +342,65 @@ async function boot() {
   }
 }
 
+function marketplaceCabinets(mp) { return cabinetsList.filter(c => c.marketplace === mp); }
+
+function resetCabinetCaches() {
+  lastMarginData = null; pricingItems = null; pendingPriceChanges = {}; stockItems = null;
+  updatePushBar();
+}
+
+function selectFirstCabinetInMarketplace() {
+  const list = marketplaceCabinets(activeMarketplace);
+  activeCabinetId = list.length ? list[0].id : null;
+}
+
+function renderMarketplaceToggle() {
+  const el = document.getElementById('marketplaceToggle');
+  const counts = { wb: marketplaceCabinets('wb').length, ozon: marketplaceCabinets('ozon').length };
+  el.innerHTML = `
+    <button data-mp="wb" class="${activeMarketplace === 'wb' ? 'active' : ''}" ${counts.wb ? '' : 'disabled'}>Wildberries</button>
+    <button data-mp="ozon" class="${activeMarketplace === 'ozon' ? 'active' : ''}" ${counts.ozon ? '' : 'disabled'}>Ozon</button>
+  `;
+  el.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      activeMarketplace = btn.dataset.mp;
+      resetCabinetCaches();
+      selectFirstCabinetInMarketplace();
+      renderMarketplaceToggle();
+      renderCabinetSelect();
+      loadView();
+    });
+  });
+}
+
 function renderCabinetSelect() {
   const el = document.getElementById('cabinetSelect');
-  const marketLabel = { wb: 'WB', ozon: 'Ozon' };
-  el.innerHTML = cabinetsList.map(c => `
-    <option value="${c.id}" ${c.id === activeCabinetId ? 'selected' : ''}>${c.display_name || marketLabel[c.marketplace] || c.marketplace}</option>
+  const list = marketplaceCabinets(activeMarketplace);
+  if (!list.length) {
+    el.innerHTML = '';
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  el.innerHTML = list.map(c => `
+    <option value="${c.id}" ${c.id === activeCabinetId ? 'selected' : ''}>${c.display_name || c.marketplace}</option>
   `).join('');
-  el.addEventListener('change', () => {
+  el.onchange = () => {
     activeCabinetId = parseInt(el.value, 10);
-    lastMarginData = null; pricingItems = null; pendingPriceChanges = {}; stockItems = null;
-    updatePushBar();
+    resetCabinetCaches();
     loadView();
-  });
+  };
 }
 
 function activeCabinet() { return cabinetsList.find(c => c.id === activeCabinetId); }
 
 function loadView() {
   const cabinet = activeCabinet();
-  document.getElementById('topbarSub').textContent = cabinet ? (cabinet.display_name || cabinet.marketplace) : '';
+  document.getElementById('topbarSub').textContent = cabinet ? (cabinet.display_name || cabinet.marketplace) : `Кабинеты ${activeMarketplace === 'wb' ? 'Wildberries' : 'Ozon'} не подключены`;
+  if (!cabinet) {
+    document.getElementById('content').innerHTML = `<div class="state-msg">Кабинеты ${activeMarketplace === 'wb' ? 'Wildberries' : 'Ozon'} пока не подключены.<br>Вернись в чат с ботом, чтобы подключить.</div>`;
+    return;
+  }
   if (activeView === 'dashboard') return loadDashboard();
   if (activeView === 'analytics') return loadAnalytics();
   if (activeView === 'detail') return loadDetail();
