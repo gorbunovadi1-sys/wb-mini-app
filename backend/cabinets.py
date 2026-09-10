@@ -72,7 +72,28 @@ def get_cabinet(cabinet_id: int) -> dict:
             "marketplace": cabinet.marketplace,
             "display_name": cabinet.display_name,
             "credentials": json.loads(decrypt(cabinet.encrypted_credentials)),
+            "settings": cabinet.settings or {},
         }
+
+
+def get_cabinet_settings(cabinet_id: int) -> dict:
+    with SessionLocal() as session:
+        cabinet = session.get(Cabinet, cabinet_id)
+        return (cabinet.settings or {}) if cabinet else {}
+
+
+def update_cabinet_settings(cabinet_id: int, patch: dict) -> dict:
+    """Merges `patch` into the cabinet's settings JSON — per-cabinet rules
+    like promo_auto_remove, margin floor, etc."""
+    with SessionLocal() as session:
+        cabinet = session.get(Cabinet, cabinet_id)
+        if not cabinet:
+            raise ValueError(f"cabinet {cabinet_id} not found")
+        settings = dict(cabinet.settings or {})
+        settings.update(patch)
+        cabinet.settings = settings
+        session.commit()
+        return settings
 
 
 def deactivate_cabinet(cabinet_id: int, user_id: int) -> bool:
@@ -107,6 +128,7 @@ def list_all_active_cabinets(marketplace: str = None) -> list:
                 "id": c.id, "user_id": c.user_id, "telegram_user_id": u.telegram_user_id,
                 "marketplace": c.marketplace, "display_name": c.display_name,
                 "credentials": json.loads(decrypt(c.encrypted_credentials)),
+                "settings": c.settings or {},
             }
             for c, u in rows
         ]

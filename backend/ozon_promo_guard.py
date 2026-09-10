@@ -17,6 +17,9 @@ def check_and_clean_cabinet(cabinet: dict) -> list:
     treated as "can't tell", not flagged), and automatically removes them
     from that promotion via the Seller API. Returns what was removed, for
     notifying the owner after the fact."""
+    if not cabinet.get("settings", {}).get("promo_auto_remove", True):
+        return []  # turned off via the toggle in the Акции tab
+
     creds = cabinet["credentials"]
     client = OzonClient(creds["client_id"], creds["api_key"])
     cabinet_id = cabinet["id"]

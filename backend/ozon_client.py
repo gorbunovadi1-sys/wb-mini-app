@@ -173,6 +173,16 @@ class OzonClient:
         })
         return data.get("result", {}).get("product_ids", [])
 
+    def activate_products_in_action(self, action_id, products):
+        """POST /v1/actions/products/activate — adds products to a promotion.
+        `products`: [{"product_id": int, "action_price": float, "stock": int}].
+        Returns (added_ids, rejected) — rejected is Ozon's per-product error list."""
+        data = self._post("/v1/actions/products/activate", {
+            "action_id": action_id, "products": products,
+        })
+        result = data.get("result", {})
+        return result.get("product_ids", []), result.get("rejected", [])
+
     def get_fbs_postings(self, date_from, date_to):
         """Paginates /v3/posting/fbs/list for [date_from, date_to) (ISO datetimes),
         with financial_data (per-product commission_amount/payout — actual, not estimated)."""

@@ -19,6 +19,7 @@ from . import ozon_prices
 from . import ozon_pricing
 from . import ozon_promo_guard
 from . import ozon_promotions
+from . import ozon_promotions_detail
 from .db import init_db
 from .ozon_client import OzonClient
 from .telegram_auth import parse_init_data_user, validate_init_data
@@ -318,6 +319,96 @@ def refresh_cabinet_ozon_promotions(
         raise HTTPException(status_code=400, detail="not an Ozon cabinet")
     client = _build_client(cabinet)
     return ozon_promotions.refresh_promotions(client=client, cabinet_id=str(cabinet_id))
+
+
+@app.get("/api/cabinets/{cabinet_id}/ozon/actions")
+def get_cabinet_ozon_actions(
+    cabinet_id: int,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+):
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
+    if cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet)
+    return {"actions": ozon_promotions_detail.list_actions(client)}
+
+
+@app.get("/api/cabinets/{cabinet_id}/ozon/actions/{action_id}")
+def get_cabinet_ozon_action_detail(
+    cabinet_id: int,
+    action_id: int,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+):
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
+    if cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet)
+    return ozon_promotions_detail.get_action_detail(client, cabinet_id, action_id)
+
+
+@app.post("/api/cabinets/{cabinet_id}/ozon/actions/{action_id}/add")
+def add_cabinet_ozon_action_products(
+    cabinet_id: int,
+    action_id: int,
+    body: dict,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+):
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
+    if cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    items = body.get("items", [])
+    if not items:
+        raise HTTPException(status_code=400, detail="items list is empty")
+    client = _build_client(cabinet)
+    return ozon_promotions_detail.add_products(client, action_id, items)
+
+
+@app.post("/api/cabinets/{cabinet_id}/ozon/actions/{action_id}/remove")
+def remove_cabinet_ozon_action_products(
+    cabinet_id: int,
+    action_id: int,
+    body: dict,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+):
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
+    if cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    product_ids = body.get("product_ids", [])
+    if not product_ids:
+        raise HTTPException(status_code=400, detail="product_ids list is empty")
+    client = _build_client(cabinet)
+    return ozon_promotions_detail.remove_products(client, action_id, product_ids)
+
+
+@app.get("/api/cabinets/{cabinet_id}/settings")
+def get_cabinet_settings(
+    cabinet_id: int,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+):
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    _owned_cabinet_or_404(cabinet_id, user_id)
+    return cabinets.get_cabinet_settings(cabinet_id)
+
+
+@app.post("/api/cabinets/{cabinet_id}/settings")
+def update_cabinet_settings(
+    cabinet_id: int,
+    body: dict,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+):
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    _owned_cabinet_or_404(cabinet_id, user_id)
+    return cabinets.update_cabinet_settings(cabinet_id, body)
 
 
 @app.get("/api/cabinets/{cabinet_id}/ozon/dimensions")

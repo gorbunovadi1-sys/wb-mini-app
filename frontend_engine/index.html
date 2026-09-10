@@ -140,6 +140,27 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
   padding: 10px 12px; font-family: var(--font); font-size: 13px; color: var(--text);
 }
 
+.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.toggle-label { font-size: 13px; font-weight: 600; }
+.toggle-sub { font-size: 11px; color: var(--text-secondary); margin-top: 3px; }
+.switch { position: relative; display: inline-block; width: 42px; height: 24px; flex: none; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch-slider {
+  position: absolute; inset: 0; background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 24px; cursor: pointer; transition: .15s;
+}
+.switch-slider::before {
+  content: ''; position: absolute; height: 16px; width: 16px; left: 3px; top: 50%; transform: translateY(-50%);
+  background: var(--text-secondary); border-radius: 50%; transition: .15s;
+}
+.switch input:checked + .switch-slider { background: var(--accent-gradient); border-color: transparent; }
+.switch input:checked + .switch-slider::before { transform: translate(18px, -50%); background: white; }
+
+.back-btn {
+  border: none; background: none; color: var(--accent); font-family: var(--font); font-size: 13px;
+  font-weight: 600; padding: 4px 0; cursor: pointer;
+}
+
 .cogs-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 .cogs-row label { font-size: 10.5px; color: var(--text-secondary); flex: none; }
 .cogs-row input {
@@ -217,6 +238,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
     <button data-view="detail"><span class="ic">▤</span>Детализация</button>
     <button data-view="pricing"><span class="ic">₽</span>Цены</button>
     <button data-view="stock"><span class="ic">📦</span>Остатки</button>
+    <button data-view="actions"><span class="ic">🏷</span>Акции</button>
   </nav>
 </aside>
 
@@ -301,7 +323,7 @@ let pricingItems = null;
 let pendingPriceChanges = {}; // offer_id -> price
 let stockItems = null;
 
-const VIEW_TITLES = { dashboard: 'Дашборд', analytics: 'Аналитика', detail: 'Детализация', pricing: 'Цены', stock: 'Остатки' };
+const VIEW_TITLES = { dashboard: 'Дашборд', analytics: 'Аналитика', detail: 'Детализация', pricing: 'Цены', stock: 'Остатки', actions: 'Акции' };
 
 async function boot() {
   try {
@@ -406,6 +428,7 @@ function loadView() {
   if (activeView === 'detail') return loadDetail();
   if (activeView === 'pricing') return loadPricing();
   if (activeView === 'stock') return loadStock();
+  if (activeView === 'actions') return loadActions();
 }
 
 // ==================== Dashboard ====================
@@ -414,12 +437,15 @@ async function loadDashboard(fromDate, toDate) {
   if (fromDate) periodFrom = fromDate;
   if (toDate) periodTo = toDate;
   const el = document.getElementById('content');
+  const reqView = activeView, reqCabinet = activeCabinetId;
   el.innerHTML = '<div class="state-msg">Загрузка данных… (может занять до минуты)</div>';
   try {
     const data = await apiFetch(`/api/cabinets/${activeCabinetId}/margin?date_from=${periodFrom}&date_to=${periodTo}`);
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return; // user navigated away while this was loading
     lastMarginData = data;
     renderDashboard(data, activeCabinet());
   } catch (e) {
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
     el.innerHTML = `<div class="state-msg">Не удалось загрузить данные кабинета.<br>${e.message}</div>`;
   }
 }
@@ -612,12 +638,15 @@ async function loadAnalytics() {
   if (lastMarginData && lastMarginData.period_from === periodFrom && lastMarginData.period_to === periodTo) {
     return renderAnalytics(lastMarginData);
   }
+  const reqView = activeView, reqCabinet = activeCabinetId;
   el.innerHTML = '<div class="state-msg">Загрузка данных… (может занять до минуты)</div>';
   try {
     const data = await apiFetch(`/api/cabinets/${activeCabinetId}/margin?date_from=${periodFrom}&date_to=${periodTo}`);
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
     lastMarginData = data;
     renderAnalytics(data);
   } catch (e) {
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
     el.innerHTML = `<div class="state-msg">Не удалось загрузить данные.<br>${e.message}</div>`;
   }
 }
@@ -735,14 +764,17 @@ function renderAnalytics(data) {
 
 async function loadDetail() {
   const el = document.getElementById('content');
+  const reqView = activeView, reqCabinet = activeCabinetId;
   el.innerHTML = '<div class="state-msg">Загрузка…</div>';
   if (!lastMarginData) {
     try {
       lastMarginData = await apiFetch(`/api/cabinets/${activeCabinetId}/margin?date_from=${periodFrom}&date_to=${periodTo}`);
     } catch (e) {
+      if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
       el.innerHTML = `<div class="state-msg">Не удалось загрузить данные.<br>${e.message}</div>`;
       return;
     }
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
   }
   renderDetail(lastMarginData.products || []);
 }
@@ -802,10 +834,12 @@ async function loadPricing() {
     el.innerHTML = '<div class="state-msg">Управление ценами пока доступно только для кабинетов Ozon.</div>';
     return;
   }
+  const reqView = activeView, reqCabinet = activeCabinetId;
   el.innerHTML = '<div class="state-msg">Загрузка товаров…</div>';
   try {
     if (!pricingItems) {
       const data = await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/pricing`);
+      if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
       pricingItems = data.items;
       pricingItems.forEach(p => {
         const price = p.price || p.min_price || 0;
@@ -814,6 +848,7 @@ async function loadPricing() {
     }
     renderPricing(pricingItems);
   } catch (e) {
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
     el.innerHTML = `<div class="state-msg">Не удалось загрузить цены.<br>${e.message}</div>`;
   }
 }
@@ -1035,6 +1070,7 @@ async function loadStock() {
     return;
   }
   if (stockItems) return renderStock(stockItems);
+  const reqView = activeView, reqCabinet = activeCabinetId;
   el.innerHTML = '<div class="state-msg">Загрузка остатков и продаж за 30 дней… (может занять до минуты)</div>';
   try {
     const to = isoDate(new Date());
@@ -1043,6 +1079,7 @@ async function loadStock() {
       pricingItems ? Promise.resolve({ items: pricingItems }) : apiFetch(`/api/cabinets/${activeCabinetId}/ozon/pricing`),
       apiFetch(`/api/cabinets/${activeCabinetId}/margin?date_from=${from}&date_to=${to}`),
     ]);
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
     pricingItems = pricingResp.items;
     const qtyByOffer = {};
     (marginResp.products || []).forEach(p => { qtyByOffer[p.offer_id] = p.qty || 0; });
@@ -1058,6 +1095,7 @@ async function loadStock() {
     });
     renderStock(stockItems);
   } catch (e) {
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
     el.innerHTML = `<div class="state-msg">Не удалось загрузить остатки.<br>${e.message}</div>`;
   }
 }
@@ -1108,6 +1146,244 @@ function stockCardHtml(p) {
     </div>
     ${p.recommendedRestock > 0 ? `<div class="price-suggest">Рекомендую поставить ещё <b>${fmtNum(p.recommendedRestock)} шт.</b></div>` : ''}
   </div>`;
+}
+
+// ==================== Акции ====================
+
+let actionsList = null;
+let cabinetSettings = null;
+let activeActionId = null;
+
+async function loadActions() {
+  const el = document.getElementById('content');
+  const cabinet = activeCabinet();
+  if (!cabinet || cabinet.marketplace !== 'ozon') {
+    el.innerHTML = '<div class="state-msg">Акции пока доступны только для кабинетов Ozon.</div>';
+    return;
+  }
+  const reqView = activeView, reqCabinet = activeCabinetId;
+  el.innerHTML = '<div class="state-msg">Загрузка акций…</div>';
+  try {
+    const [actionsResp, settings] = await Promise.all([
+      apiFetch(`/api/cabinets/${activeCabinetId}/ozon/actions`),
+      apiFetch(`/api/cabinets/${activeCabinetId}/settings`),
+    ]);
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
+    actionsList = actionsResp.actions;
+    cabinetSettings = settings;
+    renderActionsList();
+  } catch (e) {
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить акции.<br>${e.message}</div>`;
+  }
+}
+
+function renderActionsList() {
+  const el = document.getElementById('content');
+  const sorted = [...actionsList].sort((a, b) => b.participating_products_count - a.participating_products_count);
+  const autoRemove = cabinetSettings.promo_auto_remove !== false;
+  el.innerHTML = `
+    <div class="card">
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Автоматически убирать невыгодные товары</div>
+          <div class="toggle-sub">Проверяется каждые 10 минут вместе с мониторингом цен</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="autoRemoveToggle" ${autoRemove ? 'checked' : ''}>
+          <span class="switch-slider"></span>
+        </label>
+      </div>
+    </div>
+    <input class="search-box" id="actionsSearch" placeholder="Поиск по акции…">
+    <div class="product-list" id="actionsListEl"></div>
+  `;
+  document.getElementById('autoRemoveToggle').addEventListener('change', async (e) => {
+    const val = e.target.checked;
+    try {
+      cabinetSettings = await apiFetch(`/api/cabinets/${activeCabinetId}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ promo_auto_remove: val }),
+      });
+    } catch (err) {
+      alert('Не удалось сохранить настройку: ' + err.message);
+      e.target.checked = !val;
+    }
+  });
+
+  const searchEl = document.getElementById('actionsSearch');
+  const renderList = () => {
+    const q = searchEl.value.trim().toLowerCase();
+    const list = q ? sorted.filter(a => a.title.toLowerCase().includes(q)) : sorted;
+    document.getElementById('actionsListEl').innerHTML = list.map(actionCardHtml).join('') || '<div class="state-msg">Ничего не найдено</div>';
+  };
+  renderList();
+  searchEl.addEventListener('input', renderList);
+  document.getElementById('actionsListEl').addEventListener('click', (e) => {
+    const card = e.target.closest('.action-card');
+    if (card) openActionDetail(parseInt(card.dataset.action, 10), card.dataset.title);
+  });
+}
+
+function actionCardHtml(a) {
+  const dateEnd = a.date_end ? new Date(a.date_end).toLocaleDateString('ru-RU') : '';
+  return `<div class="price-card action-card" data-action="${a.id}" data-title="${(a.title || '').replace(/"/g, '&quot;')}" style="cursor:pointer">
+    <div class="p-name">${a.title}</div>
+    <div class="price-summary">
+      <span>${a.is_participating ? `Участвует: ${a.participating_products_count} товар(ов)` : 'Не участвует'}</span>
+      ${dateEnd ? `<span>до ${dateEnd}</span>` : ''}
+    </div>
+  </div>`;
+}
+
+async function openActionDetail(actionId, title) {
+  activeActionId = actionId;
+  const el = document.getElementById('content');
+  const reqView = activeView, reqCabinet = activeCabinetId;
+  el.innerHTML = '<div class="state-msg">Загрузка товаров акции… (может занять до минуты)</div>';
+  try {
+    const data = await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/actions/${actionId}`);
+    if (activeView !== reqView || activeCabinetId !== reqCabinet || activeActionId !== actionId) return;
+    renderActionDetail(title, data);
+  } catch (e) {
+    if (activeView !== reqView || activeCabinetId !== reqCabinet || activeActionId !== actionId) return;
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить акцию.<br>${e.message}</div>`;
+  }
+}
+
+function renderActionDetail(title, data) {
+  const el = document.getElementById('content');
+  el.innerHTML = `
+    <button class="back-btn" id="actionsBackBtn">← Все акции</button>
+    <div class="card"><h3>${title}</h3></div>
+    <div class="notice" style="margin-bottom:2px">В акции: ${data.in_action.length} товар(ов)</div>
+    <input class="search-box" id="inActionSearch" placeholder="Поиск в товарах акции…">
+    <div class="product-list" id="inActionList"></div>
+    <div class="card" style="margin-top:4px"><h3>Добавить товар в акцию</h3></div>
+    <input class="search-box" id="candidatesSearch" placeholder="Поиск среди доступных товаров… (${data.candidates.length})">
+    <div class="product-list" id="candidatesList"></div>
+  `;
+  document.getElementById('actionsBackBtn').addEventListener('click', renderActionsList);
+
+  const inSearchEl = document.getElementById('inActionSearch');
+  const renderIn = () => {
+    const q = inSearchEl.value.trim().toLowerCase();
+    const list = q ? data.in_action.filter(p => (p.name || '').toLowerCase().includes(q) || (p.offer_id || '').toLowerCase().includes(q)) : data.in_action;
+    document.getElementById('inActionList').innerHTML = list.slice(0, 200).map(inActionCardHtml).join('') || '<div class="state-msg">Пусто</div>';
+    document.querySelectorAll('#inActionList .action-remove-btn').forEach(btn => btn.addEventListener('click', onRemoveClick));
+  };
+  renderIn();
+  inSearchEl.addEventListener('input', renderIn);
+
+  const candSearchEl = document.getElementById('candidatesSearch');
+  const renderCand = () => {
+    const q = candSearchEl.value.trim().toLowerCase();
+    const list = q
+      ? data.candidates.filter(p => (p.name || '').toLowerCase().includes(q) || (p.offer_id || '').toLowerCase().includes(q))
+      : data.candidates.slice(0, 50);
+    document.getElementById('candidatesList').innerHTML = list.slice(0, 200).map(candidateCardHtml).join('') || '<div class="state-msg">Ничего не найдено</div>';
+    document.querySelectorAll('#candidatesList .price-card').forEach(recalcCandProfit);
+    document.querySelectorAll('#candidatesList .action-add-btn').forEach(btn => btn.addEventListener('click', onAddClick));
+    document.querySelectorAll('#candidatesList .cand-price-input').forEach(inp => inp.addEventListener('input', (e) => recalcCandProfit(e.target.closest('.price-card'))));
+  };
+  renderCand();
+  candSearchEl.addEventListener('input', renderCand);
+}
+
+function inActionCardHtml(p) {
+  const profitKnown = p.profit !== null;
+  const neg = profitKnown && p.profit < 0;
+  return `<div class="price-card">
+    <div class="p-name">${p.name}</div>
+    <div class="p-offer copy-chip" data-copy="${p.offer_id}">${p.offer_id}</div>
+    <div class="price-summary">
+      <span>Цена по акции: ${fmtMoney(p.action_price || 0)}</span>
+      <span>Обычная: ${fmtMoney(p.price || 0)}</span>
+    </div>
+    <div class="price-profit-row">
+      <span class="pp-label">Прибыль по акции</span>
+      <span class="pp-value ${profitKnown ? (neg ? 'neg' : 'pos') : ''}">${profitKnown ? fmtMoney(p.profit) : 'нет данных'}</span>
+    </div>
+    <div class="price-save-row"><button class="price-save-btn action-remove-btn" data-pid="${p.product_id}">Убрать из акции</button></div>
+  </div>`;
+}
+
+function candidateCardHtml(p) {
+  const suggested = p.max_action_price || p.price || 0;
+  return `<div class="price-card" data-pid="${p.product_id}" data-cogs="${p.cogs_unit}" data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}">
+    <div class="p-name">${p.name}</div>
+    <div class="p-offer copy-chip" data-copy="${p.offer_id}">${p.offer_id}</div>
+    <div class="price-fields">
+      <div class="price-field">
+        <label>Цена по акции (макс. ${fmtMoney(p.max_action_price || 0)})</label>
+        <input type="number" class="cand-price-input" value="${suggested}">
+      </div>
+    </div>
+    <div class="price-profit-row">
+      <span class="pp-label">Прибыль по этой цене</span>
+      <span class="pp-value cand-profit-out">—</span>
+    </div>
+    <div class="price-save-row"><button class="price-save-btn action-add-btn" data-pid="${p.product_id}">Добавить в акцию</button></div>
+  </div>`;
+}
+
+function recalcCandProfit(card) {
+  const priceInput = card.querySelector('.cand-price-input');
+  const out = card.querySelector('.cand-profit-out');
+  if (!priceInput || !out) return;
+  const price = parseFloat(priceInput.value) || 0;
+  const cogs = parseFloat(card.dataset.cogs) || 0;
+  const commission = parseFloat(card.dataset.commission) || 0;
+  const logistics = parseFloat(card.dataset.logistics) || 0;
+  const profit = price - cogs - (price * (commission / 100) + logistics);
+  out.textContent = fmtMoney(profit);
+  out.classList.toggle('neg', profit < 0);
+  out.classList.toggle('pos', profit >= 0);
+}
+
+async function onAddClick(e) {
+  const btn = e.target;
+  const card = btn.closest('.price-card');
+  const pid = parseInt(card.dataset.pid, 10);
+  const price = parseFloat(card.querySelector('.cand-price-input').value) || 0;
+  if (price <= 0) { alert('Укажи цену по акции'); return; }
+  btn.disabled = true; btn.textContent = 'Добавляю…';
+  try {
+    const resp = await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/actions/${activeActionId}/add`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: [{ product_id: pid, action_price: price, stock: 0 }] }),
+    });
+    if (resp.rejected && resp.rejected.length) {
+      alert('Ozon отклонил добавление: ' + JSON.stringify(resp.rejected));
+      btn.disabled = false; btn.textContent = 'Добавить в акцию';
+    } else {
+      btn.textContent = 'Добавлено ✓';
+      btn.classList.add('staged-btn');
+    }
+  } catch (err) {
+    alert('Не удалось добавить: ' + err.message);
+    btn.disabled = false; btn.textContent = 'Добавить в акцию';
+  }
+}
+
+async function onRemoveClick(e) {
+  const btn = e.target;
+  const card = btn.closest('.price-card');
+  const pid = parseInt(btn.dataset.pid, 10);
+  btn.disabled = true; btn.textContent = 'Убираю…';
+  try {
+    await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/actions/${activeActionId}/remove`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ product_ids: [pid] }),
+    });
+    card.remove();
+  } catch (err) {
+    alert('Не удалось убрать: ' + err.message);
+    btn.disabled = false; btn.textContent = 'Убрать из акции';
+  }
 }
 
 document.addEventListener('click', async (e) => {
