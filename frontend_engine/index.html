@@ -765,11 +765,14 @@ function renderAnalytics(data) {
 
 // ==================== Детализация по товарам ====================
 
-async function loadDetail() {
+async function loadDetail(fromDate, toDate) {
   const el = document.getElementById('content');
   const reqView = activeView, reqCabinet = activeCabinetId;
-  el.innerHTML = '<div class="state-msg">Загрузка…</div>';
+  if (fromDate) periodFrom = fromDate;
+  if (toDate) periodTo = toDate;
+  if (fromDate || toDate) lastMarginData = null; // period changed — cached data no longer matches
   if (!lastMarginData) {
+    el.innerHTML = '<div class="state-msg">Загрузка данных… (может занять до минуты)</div>';
     try {
       lastMarginData = await apiFetch(`/api/cabinets/${activeCabinetId}/margin?date_from=${periodFrom}&date_to=${periodTo}`);
     } catch (e) {
@@ -785,6 +788,20 @@ async function loadDetail() {
 function renderDetail(products) {
   const el = document.getElementById('content');
   el.innerHTML = `
+    <div class="card">
+      <h3>Период</h3>
+      <div class="date-range">
+        <div class="field"><label>С</label><input type="date" id="detailDateFrom" value="${periodFrom}"></div>
+        <div class="field"><label>По</label><input type="date" id="detailDateTo" value="${periodTo}"></div>
+        <button id="detailApplyPeriod">Показать</button>
+      </div>
+      <div class="quick-chips">
+        <button data-days="7">7 дн.</button>
+        <button data-days="14">14 дн.</button>
+        <button data-days="30">30 дн.</button>
+        <button data-days="90">90 дн.</button>
+      </div>
+    </div>
     <input class="search-box" id="detailSearch" placeholder="Поиск по названию или артикулу…">
     <div class="date-range" style="align-items:center">
       <div class="field" style="flex:2">
@@ -803,6 +820,22 @@ function renderDetail(products) {
     <div class="notice">За период ${lastMarginData.period_from} — ${lastMarginData.period_to} · ${products.length} товаров с продажами</div>
     <div class="product-list" id="detailList"></div>
   `;
+  document.getElementById('detailApplyPeriod').addEventListener('click', () => {
+    const f = document.getElementById('detailDateFrom').value;
+    const t = document.getElementById('detailDateTo').value;
+    if (!f || !t) { alert('Укажи обе даты'); return; }
+    if (f > t) { alert('Дата "с" не может быть позже даты "по"'); return; }
+    loadDetail(f, t);
+  });
+  document.querySelectorAll('.quick-chips button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const days = parseInt(btn.dataset.days, 10);
+      const to = new Date();
+      const from = new Date(Date.now() - (days - 1) * 86400000);
+      loadDetail(isoDate(from), isoDate(to));
+    });
+  });
+
   const searchEl = document.getElementById('detailSearch');
   const sortEl = document.getElementById('detailSort');
   const onlyNegEl = document.getElementById('detailOnlyNeg');
@@ -820,7 +853,7 @@ function renderDetail(products) {
     const listEl = document.getElementById('detailList');
     const maxAbsProfit = Math.max(...list.map(p => Math.abs(p.profit)), 1);
     listEl.innerHTML = list.map(p => productCardHtml(p, maxAbsProfit)).join('') || '<div class="state-msg">Ничего не найдено</div>';
-    bindCogsHandlers(listEl, loadDetail);
+    bindCogsHandlers(listEl, () => { lastMarginData = null; loadDetail(); });
   };
   renderList();
   searchEl.addEventListener('input', renderList);
