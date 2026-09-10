@@ -212,7 +212,9 @@ def get_cabinet_margin(
     cost_prices = cabinets.get_cost_prices(cabinet_id)
     try:
         if cabinet["marketplace"] == "wb":
-            return margin.build_margin_summary(client=client, cost_prices=cost_prices, days=days)
+            return margin.build_margin_summary(
+                client=client, cost_prices=cost_prices, days=days, date_from=date_from, date_to=date_to,
+            )
         return ozon_margin.build_margin_summary(
             client=client, cost_prices=cost_prices, days=days, date_from=date_from, date_to=date_to,
         )

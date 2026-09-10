@@ -43,14 +43,21 @@ def _accumulate(bucket, row):
         bucket["qty"] += int(row.get("quantity") or 0)
 
 
-def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
+def build_margin_summary(client=None, cost_prices=None, days: int = 30, date_from: str = None, date_to: str = None) -> dict:
+    """`days` back from today, or an explicit [date_from, date_to] range —
+    same calling convention as ozon_margin.build_margin_summary."""
     client = client or wb_client.default_client
-    date_to = datetime.date.today()
-    cutoff = date_to - datetime.timedelta(days=days)
-    fetch_from = date_to - datetime.timedelta(days=days * 2)
+    if date_from and date_to:
+        cutoff = datetime.date.fromisoformat(date_from)
+        d_to = datetime.date.fromisoformat(date_to)
+        days = (d_to - cutoff).days + 1
+    else:
+        d_to = datetime.date.today()
+        cutoff = d_to - datetime.timedelta(days=days - 1)
+    fetch_from = cutoff - datetime.timedelta(days=days)
 
     log.info("Fetching sales report list...")
-    reports = client.get_sales_reports(fetch_from.isoformat(), date_to.isoformat(), period="weekly")
+    reports = client.get_sales_reports(fetch_from.isoformat(), d_to.isoformat(), period="weekly")
     report_ids = sorted({r["reportId"] for r in reports})
     log.info(f"{len(report_ids)} reports to pull detail for")
 
@@ -63,7 +70,7 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
         **_empty_bucket(), "title": "", "vendor_code": "", "brand": "",
     })
     prev_totals = _empty_bucket()
-    daily = collections.defaultdict(lambda: {"revenue": 0.0, "forpay": 0.0})
+    daily = collections.defaultdict(lambda: {"revenue": 0.0, "forpay": 0.0, "qty": 0})
 
     for row in all_rows:
         row_date_str = _row_date(row)
@@ -88,6 +95,7 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
             d["forpay"] += _num(row, "forPay")
             if row.get("docTypeName") == "Продажа":
                 d["revenue"] += _num(row, "retailAmount")
+                d["qty"] += int(row.get("quantity") or 0)
         else:
             _accumulate(prev_totals, row)
 
@@ -97,7 +105,7 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
     # --- Ad spend: current period allocated per-product, plus previous period total for comparison ---
     log.info("Fetching ad campaign spend...")
     advert_ids = client.get_active_campaign_ids(changed_since=fetch_from.isoformat())
-    fullstats = client.get_campaign_fullstats(advert_ids, cutoff.isoformat(), date_to.isoformat())
+    fullstats = client.get_campaign_fullstats(advert_ids, cutoff.isoformat(), d_to.isoformat())
     total_ad_spend = sum(_num(s, "sum") for s in fullstats)
 
     prev_fullstats = client.get_campaign_fullstats(advert_ids, fetch_from.isoformat(), (cutoff - datetime.timedelta(days=1)).isoformat())
@@ -148,7 +156,7 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
     prev_profit_approx = prev_forpay - prev_ad_spend - prev_cogs_approx
 
     daily_series = [
-        {"date": d, "revenue": round(v["revenue"], 2), "forpay": round(v["forpay"], 2)}
+        {"date": d, "revenue": round(v["revenue"], 2), "forpay": round(v["forpay"], 2), "qty": v["qty"]}
         for d, v in sorted(daily.items())
     ]
 
@@ -159,6 +167,8 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30) -> dict:
 
     return {
         "generated_at": datetime.datetime.now().isoformat(),
+        "period_from": cutoff.isoformat(),
+        "period_to": d_to.isoformat(),
         "period_days": days,
         "account": {
             "revenue": round(total_revenue, 2),
