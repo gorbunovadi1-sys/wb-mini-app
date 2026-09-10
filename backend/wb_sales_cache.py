@@ -6,7 +6,11 @@ from .models import WBSalesCache
 
 log = logging.getLogger("wb_sales_cache")
 
-WINDOW_DAYS = 90  # covers every quick-chip (7/14/30/90) in one fetch
+# margin.build_margin_summary fetches back an extra `days` beyond the
+# requested cutoff for previous-period comparison — so the widest quick-chip
+# (90 days) actually needs data back to today-179, not just today-90.
+# Round up to 180 so every quick-chip (7/14/30/90) is always cache-servable.
+WINDOW_DAYS = 180
 STALE_AFTER = datetime.timedelta(hours=4)
 
 
