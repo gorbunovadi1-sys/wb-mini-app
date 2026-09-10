@@ -4,6 +4,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+import requests
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -352,13 +353,14 @@ def get_cabinet_margin(
     # A live (cache-miss) fetch here happens inside an HTTP request a tab is
     # waiting on — the platform's own reverse-proxy timeout kills it well
     # before OzonClient's full patient 8-retry schedule (up to ~165s on one
-    # call) finishes, coming back as a bare, unhelpful 502. Even a 3-attempt
-    # (~30s) budget was observed still occasionally losing that race in
-    # production, so this stays short (2 attempts, ~15s worst case on one
-    # call) — the background cache refresh (ozon_sales_cache) is what's
-    # meant to actually recover from a sustained block, using the full
-    # patient schedule separately and not racing any proxy timeout.
-    client = _build_client(cabinet, ozon_max_retries=2)
+    # call) finishes, coming back as a bare, unhelpful 502. Even a 2-attempt
+    # (~15s) budget was observed still occasionally losing that race in
+    # production, so this makes exactly one attempt — no retry sleep at all,
+    # just the network round-trip — guaranteeing a fast, clear error instead
+    # of ever racing a proxy timeout. Recovering from a real sustained block
+    # is entirely the background cache refresh's job (ozon_sales_cache),
+    # which uses the full patient schedule on its own separate time budget.
+    client = _build_client(cabinet, ozon_max_retries=1)
     cost_prices = cabinets.get_cost_prices(cabinet_id)
     try:
         if cabinet["marketplace"] == "wb":
@@ -376,6 +378,14 @@ def get_cabinet_margin(
             cached_postings=cpostings, cached_accrual_by_date=caccrual,
             cached_non_item_by_date=cnonitem, cache_cover_from=ccover_from,
         )
+    except requests.exceptions.HTTPError as e:
+        log.exception(f"Failed to build margin for cabinet {cabinet_id}")
+        if e.response is not None and e.response.status_code == 429:
+            raise HTTPException(
+                status_code=429,
+                detail="Маркетплейс временно ограничивает количество запросов от этого кабинета. Подождите пару минут и откройте вкладку заново.",
+            )
+        raise HTTPException(status_code=502, detail=f"upstream marketplace API error: {e}")
     except Exception as e:
         log.exception(f"Failed to build margin for cabinet {cabinet_id}")
         raise HTTPException(status_code=502, detail=f"upstream marketplace API error: {e}")
