@@ -300,11 +300,13 @@ def _resolve_user_id(x_telegram_init_data: Optional[str], telegram_id: Optional[
     return cabinets.get_or_create_user(tg_id, tg_user.get("first_name"), tg_user.get("username"))
 
 
-def _build_client(cabinet: dict):
+def _build_client(cabinet: dict, ozon_max_retries: int = None):
     creds = cabinet["credentials"]
     if cabinet["marketplace"] == "wb":
         return WBClient(creds["api_key"])
     if cabinet["marketplace"] == "ozon":
+        if ozon_max_retries is not None:
+            return OzonClient(creds["client_id"], creds["api_key"], max_retries=ozon_max_retries)
         return OzonClient(creds["client_id"], creds["api_key"])
     raise ValueError(f"unknown marketplace {cabinet['marketplace']}")
 
@@ -334,7 +336,14 @@ def get_cabinet_margin(
     days = max(7, min(days, 180))
     user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
     cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
-    client = _build_client(cabinet)
+    # A live (cache-miss) fetch here happens inside an HTTP request a tab is
+    # waiting on — the platform's own reverse-proxy timeout will kill it long
+    # before OzonClient's full patient 8-retry schedule (up to ~165s on one
+    # call) finishes, coming back as a bare, unhelpful 502. Fail fast instead
+    # (3 attempts, ~30s worst case on one call) so a genuine sustained block
+    # comes back as our own clear error message — the background cache
+    # refresh (ozon_sales_cache) uses the full patient schedule separately.
+    client = _build_client(cabinet, ozon_max_retries=3)
     cost_prices = cabinets.get_cost_prices(cabinet_id)
     try:
         if cabinet["marketplace"] == "wb":

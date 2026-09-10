@@ -24,7 +24,7 @@ class OzonClient:
     instance makes — lets different cabinets (different Telegram users) hit the
     same endpoints with their own Client-Id/Api-Key at the same time."""
 
-    def __init__(self, client_id: str, api_key: str):
+    def __init__(self, client_id: str, api_key: str, max_retries: int = 8):
         self.client_id = _sanitize(client_id, "0-9")
         self.api_key = _sanitize(api_key, "A-Za-z0-9-")
         self.headers = {
@@ -32,6 +32,15 @@ class OzonClient:
             "Api-Key": self.api_key,
             "Content-Type": "application/json",
         }
+        # A background job (cache refresh, monitoring) has nothing waiting on
+        # an HTTP connection, so it can afford the full patient schedule. A
+        # request made live inside a route DOES have something waiting — the
+        # platform's own reverse-proxy timeout — and the full 8-attempt
+        # schedule (up to ~165s on one call alone) blows past that and comes
+        # back as a bare 502 with no error message at all, worse than a fast,
+        # clear failure. Callers on the interactive path should pass a lower
+        # max_retries (see ai_engine_app._build_client).
+        self.max_retries = max_retries
 
     def _retry_delay(self, r, attempt: int) -> int:
         """Ozon's own Retry-After under sustained rate-limiting has been
@@ -49,26 +58,26 @@ class OzonClient:
 
     def _post(self, path, payload, timeout=60):
         r = None
-        for attempt in range(8):
+        for attempt in range(self.max_retries):
             r = requests.post(f"{BASE}{path}", headers=self.headers, json=payload, timeout=timeout)
             if r.status_code != 429:
                 r.raise_for_status()
                 return r.json()
             retry_after = self._retry_delay(r, attempt)
-            log.warning(f"429 from {path}, retrying in {retry_after}s (attempt {attempt + 1})")
+            log.warning(f"429 from {path}, retrying in {retry_after}s (attempt {attempt + 1}/{self.max_retries})")
             time.sleep(retry_after)
         r.raise_for_status()
         return r.json()
 
     def _get(self, path, timeout=30):
         r = None
-        for attempt in range(8):
+        for attempt in range(self.max_retries):
             r = requests.get(f"{BASE}{path}", headers=self.headers, timeout=timeout)
             if r.status_code != 429:
                 r.raise_for_status()
                 return r.json()
             retry_after = self._retry_delay(r, attempt)
-            log.warning(f"429 from {path}, retrying in {retry_after}s (attempt {attempt + 1})")
+            log.warning(f"429 from {path}, retrying in {retry_after}s (attempt {attempt + 1}/{self.max_retries})")
             time.sleep(retry_after)
         r.raise_for_status()
         return r.json()
