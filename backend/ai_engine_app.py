@@ -73,6 +73,24 @@ async def _check_one_cabinet(cabinet: dict, bot, semaphore: "asyncio.Semaphore")
             except Exception:
                 log.exception(f"Dimension check failed for cabinet {cabinet['id']}")
 
+            if dimension_events:
+                # A dimension change shifts Ozon's own logistics estimate for the
+                # product — pull current price/margin so the notification shows
+                # the actual impact, not just "the size changed".
+                try:
+                    pricing = await asyncio.to_thread(ozon_pricing.get_pricing_list, dim_client, cabinet["id"])
+                    pricing_by_offer = {p["offer_id"]: p for p in pricing}
+                    for e in dimension_events:
+                        p = pricing_by_offer.get(e["offer_id"])
+                        if p:
+                            price = p["price"] or p["min_price"] or 0
+                            expense = price * (p["commission_pct"] / 100) + p["logistics_estimate"]
+                            profit = price - (p["cogs_unit"] or 0) - expense
+                            e["current_profit"] = round(profit, 2)
+                            e["current_margin_percent"] = round(profit / price * 100, 2) if price else None
+                except Exception:
+                    log.exception(f"Failed to enrich dimension events with profit for cabinet {cabinet['id']}")
+
     name = cabinet["display_name"] or cabinet["id"]
     min_margin_pct = settings.get("min_margin_pct", 0)
 
@@ -102,8 +120,17 @@ async def _check_one_cabinet(cabinet: dict, bot, semaphore: "asyncio.Semaphore")
         await _notify(bot, cabinet, text)
 
     if dimension_events:
-        lines = [f"• {e['title']} ({e['offer_id']}): {e['field_label']} {e['old_value']} → {e['new_value']} {e['unit']}" for e in dimension_events]
-        text = f"📐 В кабинете «{name}» изменились габариты/вес у {len(dimension_events)} товар(ов):\n\n" + "\n".join(lines)
+        def _dim_line(e):
+            base = f"• {e['title']} ({e['offer_id']}): {e['field_label']} {e['old_value']} → {e['new_value']} {e['unit']}"
+            if "current_profit" in e:
+                margin = f"{e['current_margin_percent']}%" if e["current_margin_percent"] is not None else "—"
+                base += f"\n  сейчас прибыль {e['current_profit']} ₽ (маржа {margin}) с учётом новой логистики"
+            return base
+        lines = [_dim_line(e) for e in dimension_events]
+        text = (
+            f"📐 В кабинете «{name}» изменились габариты/вес у {len(dimension_events)} товар(ов) — "
+            f"это влияет на логистику:\n\n" + "\n".join(lines)
+        )
         await _notify(bot, cabinet, text)
 
 
