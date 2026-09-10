@@ -114,6 +114,26 @@ class OzonClient:
                 break
         return items
 
+    def get_all_stocks(self):
+        """Paginates /v4/product/info/stocks (cursor-based) — FBO and FBS
+        present/reserved stock per product. Returns {offer_id: {"fbo": n, "fbs": n}}."""
+        stocks = {}
+        cursor = ""
+        while True:
+            data = self._post("/v4/product/info/stocks", {"filter": {}, "limit": 1000, "cursor": cursor})
+            items = data.get("items", [])
+            for item in items:
+                offer_id = item.get("offer_id")
+                entry = stocks.setdefault(offer_id, {"fbo": 0, "fbs": 0})
+                for s in item.get("stocks", []):
+                    stype = s.get("type")
+                    if stype in entry:
+                        entry[stype] += s.get("present", 0)
+            cursor = data.get("cursor", "")
+            if not cursor or len(items) < 1000:
+                break
+        return stocks
+
     def get_actions(self):
         """GET /v1/actions — all promotions Ozon is currently running, with
         is_participating / participating_products_count already computed for this seller."""

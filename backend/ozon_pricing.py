@@ -10,6 +10,7 @@ def get_pricing_list(client, cabinet_id: int) -> list:
     attrs = client.get_all_attributes()
     names = {a.get("offer_id"): a.get("name", "") for a in attrs}
     cost_prices = cabinets.get_cost_prices(cabinet_id)
+    stocks = client.get_all_stocks()
 
     items = []
     for p in prices:
@@ -25,6 +26,7 @@ def get_pricing_list(client, cabinet_id: int) -> list:
         # the midpoint of Ozon's own min/max range as a working estimate.
         logistics_estimate = round((logistics_min + logistics_max) / 2 + last_mile, 2)
 
+        stock = stocks.get(offer_id, {"fbo": 0, "fbs": 0})
         items.append({
             "offer_id": offer_id,
             "product_id": p.get("product_id"),
@@ -35,6 +37,8 @@ def get_pricing_list(client, cabinet_id: int) -> list:
             "cogs_unit": cost_prices.get(offer_id, 0),
             "commission_pct": sales_pct,
             "logistics_estimate": logistics_estimate,
+            "fbo_stock": stock["fbo"],
+            "fbs_stock": stock["fbs"],
         })
     items.sort(key=lambda x: x["name"] or "")
     return items

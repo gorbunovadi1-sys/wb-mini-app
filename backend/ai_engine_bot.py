@@ -282,7 +282,10 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
         my = cabinets.list_cabinets(user_id)
         rows = [
             [InlineKeyboardButton(
-                text=f"{c['display_name'] or MARKETPLACE_LABELS.get(c['marketplace'], c['marketplace'])} ({MARKETPLACE_LABELS.get(c['marketplace'], c['marketplace'])})",
+                text=(
+                    ("✅ " if cabinets.get_cost_prices(c["id"]) else "")
+                    + f"{c['display_name'] or MARKETPLACE_LABELS.get(c['marketplace'], c['marketplace'])} ({MARKETPLACE_LABELS.get(c['marketplace'], c['marketplace'])})"
+                ),
                 callback_data=f"costtpl_{c['id']}",
             )]
             for c in my

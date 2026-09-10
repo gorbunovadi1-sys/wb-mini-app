@@ -208,6 +208,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
     <button data-view="analytics"><span class="ic">📈</span>Аналитика</button>
     <button data-view="detail"><span class="ic">▤</span>Детализация</button>
     <button data-view="pricing"><span class="ic">₽</span>Цены</button>
+    <button data-view="stock"><span class="ic">📦</span>Остатки</button>
   </nav>
 </aside>
 
@@ -288,8 +289,9 @@ let periodTo = isoDate(new Date());
 let lastMarginData = null;
 let pricingItems = null;
 let pendingPriceChanges = {}; // offer_id -> price
+let stockItems = null;
 
-const VIEW_TITLES = { dashboard: 'Дашборд', analytics: 'Аналитика', detail: 'Детализация', pricing: 'Цены' };
+const VIEW_TITLES = { dashboard: 'Дашборд', analytics: 'Аналитика', detail: 'Детализация', pricing: 'Цены', stock: 'Остатки' };
 
 async function boot() {
   try {
@@ -336,7 +338,7 @@ function renderCabinetSelect() {
   `).join('');
   el.addEventListener('change', () => {
     activeCabinetId = parseInt(el.value, 10);
-    lastMarginData = null; pricingItems = null; pendingPriceChanges = {};
+    lastMarginData = null; pricingItems = null; pendingPriceChanges = {}; stockItems = null;
     updatePushBar();
     loadView();
   });
@@ -351,6 +353,7 @@ function loadView() {
   if (activeView === 'analytics') return loadAnalytics();
   if (activeView === 'detail') return loadDetail();
   if (activeView === 'pricing') return loadPricing();
+  if (activeView === 'stock') return loadStock();
 }
 
 // ==================== Dashboard ====================
@@ -837,6 +840,10 @@ function priceCardHtml(p) {
       <span>Комиссия ${p.commission_pct}%</span>
       <span class="expense-out">расход/шт. —</span>
     </div>
+    <div class="price-summary">
+      <span>Остаток FBO: ${fmtNum(p.fbo_stock || 0)}</span>
+      <span>FBS: ${fmtNum(p.fbs_stock || 0)}</span>
+    </div>
     <div class="price-profit-row">
       <span class="pp-label">Прибыль со штуки</span>
       <span class="pp-value profit-out">—</span>
@@ -964,6 +971,91 @@ async function pushPriceUpdates() {
     btn.textContent = 'Отправить обновления';
     btn.disabled = false;
   }
+}
+
+// ==================== Остатки ====================
+
+async function loadStock() {
+  const el = document.getElementById('content');
+  const cabinet = activeCabinet();
+  if (!cabinet || cabinet.marketplace !== 'ozon') {
+    el.innerHTML = '<div class="state-msg">Остатки пока доступны только для кабинетов Ozon.</div>';
+    return;
+  }
+  if (stockItems) return renderStock(stockItems);
+  el.innerHTML = '<div class="state-msg">Загрузка остатков и продаж за 30 дней… (может занять до минуты)</div>';
+  try {
+    const to = isoDate(new Date());
+    const from = isoDate(new Date(Date.now() - 29 * 86400000));
+    const [pricingResp, marginResp] = await Promise.all([
+      pricingItems ? Promise.resolve({ items: pricingItems }) : apiFetch(`/api/cabinets/${activeCabinetId}/ozon/pricing`),
+      apiFetch(`/api/cabinets/${activeCabinetId}/margin?date_from=${from}&date_to=${to}`),
+    ]);
+    pricingItems = pricingResp.items;
+    const qtyByOffer = {};
+    (marginResp.products || []).forEach(p => { qtyByOffer[p.offer_id] = p.qty || 0; });
+
+    stockItems = pricingItems.map(p => {
+      const qty30 = qtyByOffer[p.offer_id] || 0;
+      const dailyVelocity = qty30 / 30;
+      const totalStock = (p.fbo_stock || 0) + (p.fbs_stock || 0);
+      const daysLeft = dailyVelocity > 0 ? totalStock / dailyVelocity : null;
+      const targetDays = 30;
+      const recommendedRestock = dailyVelocity > 0 ? Math.max(0, Math.ceil(targetDays * dailyVelocity - totalStock)) : 0;
+      return { ...p, qty30, dailyVelocity, totalStock, daysLeft, recommendedRestock };
+    });
+    renderStock(stockItems);
+  } catch (e) {
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить остатки.<br>${e.message}</div>`;
+  }
+}
+
+function renderStock(items) {
+  const el = document.getElementById('content');
+  el.innerHTML = `
+    <input class="search-box" id="stockSearch" placeholder="Поиск по названию или артикулу…">
+    <div class="notice" style="margin-bottom:2px">Продажи за последние 30 дней · рекомендация — досыпать до запаса на 30 дней вперёд</div>
+    <div class="product-list" id="stockList"></div>
+  `;
+  const searchEl = document.getElementById('stockSearch');
+
+  const renderList = () => {
+    const q = searchEl.value.trim().toLowerCase();
+    let list = q ? items.filter(i => (i.name || '').toLowerCase().includes(q) || (i.offer_id || '').toLowerCase().includes(q)) : items.slice();
+    // Товары, которым реально грозит аутсток — первыми; без продаж — в конец.
+    list.sort((a, b) => {
+      const aLeft = a.daysLeft === null ? Infinity : a.daysLeft;
+      const bLeft = b.daysLeft === null ? Infinity : b.daysLeft;
+      return aLeft - bLeft;
+    });
+    document.getElementById('stockList').innerHTML = list.slice(0, 300).map(stockCardHtml).join('')
+      || '<div class="state-msg">Ничего не найдено</div>';
+  };
+  renderList();
+  searchEl.addEventListener('input', renderList);
+}
+
+function stockCardHtml(p) {
+  const urgent = p.daysLeft !== null && p.daysLeft < 14;
+  const daysLeftText = p.daysLeft === null
+    ? (p.totalStock > 0 ? 'нет продаж' : 'нет остатка')
+    : `≈${Math.floor(p.daysLeft)} дн.`;
+  return `<div class="price-card">
+    <div class="p-name">${p.name}</div>
+    <div class="p-offer copy-chip" data-copy="${p.offer_id}">${p.offer_id}</div>
+    <div class="price-summary">
+      <span>Остаток FBO: ${fmtNum(p.fbo_stock || 0)}</span>
+      <span>FBS: ${fmtNum(p.fbs_stock || 0)}</span>
+    </div>
+    <div class="price-summary">
+      <span>Продажи 30дн: ${fmtNum(p.qty30)} шт.</span>
+    </div>
+    <div class="price-profit-row">
+      <span class="pp-label">Хватит на</span>
+      <span class="pp-value ${urgent ? 'neg' : 'pos'}">${daysLeftText}</span>
+    </div>
+    ${p.recommendedRestock > 0 ? `<div class="price-suggest">Рекомендую поставить ещё <b>${fmtNum(p.recommendedRestock)} шт.</b></div>` : ''}
+  </div>`;
 }
 
 document.addEventListener('click', async (e) => {
