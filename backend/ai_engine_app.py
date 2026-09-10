@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -22,6 +23,8 @@ from . import ozon_promotions
 from . import ozon_promotions_detail
 from . import wb_ads
 from . import wb_prices
+from . import wb_sales_cache
+from . import wb_stock
 from .db import init_db
 from .ozon_client import OzonClient
 from .telegram_auth import parse_init_data_user, validate_init_data
@@ -93,6 +96,20 @@ async def _run_price_checks(bot):
     await asyncio.gather(*[_check_one_cabinet(c, bot, semaphore) for c in cabs])
 
 
+async def _refresh_wb_caches():
+    """Runs periodically: re-fetches WB's slow finance-api sales-report rows
+    for every active WB cabinet into wb_sales_cache, so the margin/stock
+    endpoints can serve from cache (fast) instead of hitting WB live — a
+    live 30-day fetch can take 15-20+ minutes due to WB's 1 req/min
+    finance-api throttle and a real cabinet needing 15-20+ report chunks."""
+    for cabinet in cabinets.list_all_active_cabinets(marketplace="wb"):
+        try:
+            client = WBClient(cabinet["credentials"]["api_key"])
+            await asyncio.to_thread(wb_sales_cache.refresh, client, cabinet["id"])
+        except Exception:
+            log.exception(f"WB sales cache refresh failed for cabinet {cabinet['id']}")
+
+
 @app.on_event("startup")
 async def on_startup():
     init_db()
@@ -140,8 +157,11 @@ async def on_startup():
         # same event loop as the bot — needed to call bot.send_message safely.
         scheduler = AsyncIOScheduler()
         scheduler.add_job(_run_price_checks, "interval", minutes=10, args=[bot])
+        scheduler.add_job(_refresh_wb_caches, "interval", hours=3)
         scheduler.start()
-        log.info("Price monitor scheduled every 10 minutes")
+        log.info("Price monitor scheduled every 10 minutes; WB sales cache refresh every 3 hours")
+        asyncio.create_task(_refresh_wb_caches())
+        log.info("Kicked off an initial WB sales cache refresh (not waiting for the first 3h tick)")
     else:
         log.info("AI_ENGINE_BOT_TOKEN not set — bot polling not started")
 
@@ -214,8 +234,11 @@ def get_cabinet_margin(
     cost_prices = cabinets.get_cost_prices(cabinet_id)
     try:
         if cabinet["marketplace"] == "wb":
+            cached = wb_sales_cache.get(cabinet_id)
+            rows, rows_cover_from = (cached[0], cached[1]) if cached else (None, None)
             return margin.build_margin_summary(
                 client=client, cost_prices=cost_prices, days=days, date_from=date_from, date_to=date_to,
+                rows=rows, rows_cover_from=rows_cover_from,
             )
         return ozon_margin.build_margin_summary(
             client=client, cost_prices=cost_prices, days=days, date_from=date_from, date_to=date_to,
@@ -310,6 +333,55 @@ def get_cabinet_wb_pricing(
         raise HTTPException(status_code=400, detail="not a WB cabinet")
     client = _build_client(cabinet)
     return {"items": wb_prices.get_price_list(client, cabinet_id)}
+
+
+@app.get("/api/cabinets/{cabinet_id}/wb/stock")
+def get_cabinet_wb_stock(
+    cabinet_id: int,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+):
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
+    if cabinet["marketplace"] != "wb":
+        raise HTTPException(status_code=400, detail="not a WB cabinet")
+    client = _build_client(cabinet)
+    cost_prices = cabinets.get_cost_prices(cabinet_id)
+    cached = wb_sales_cache.get(cabinet_id)
+    rows, rows_cover_from = (cached[0], cached[1]) if cached else (None, None)
+
+    # Both calls are slow and independent (WB's finance-throttled sales
+    # report — skipped if a cache hit — and WB's async FBO-remains report) —
+    # run them side by side instead of one after the other.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        margin_future = pool.submit(
+            margin.build_margin_summary, client=client, cost_prices=cost_prices, days=30,
+            rows=rows, rows_cover_from=rows_cover_from,
+        )
+        stock_future = pool.submit(wb_stock.get_fbo_stock, client)
+        margin_data = margin_future.result()
+        fbo_stock = stock_future.result()
+
+    names = {p["nm_id"]: p["title"] for p in margin_data["products"]}
+    vendor_codes = {p["nm_id"]: p["vendor_code"] for p in margin_data["products"]}
+    qty_by_nm = {p["nm_id"]: p.get("qty", 0) for p in margin_data["products"]}
+
+    items = []
+    for nm_id, stock in fbo_stock.items():
+        qty30 = qty_by_nm.get(nm_id, 0)
+        daily_velocity = qty30 / 30
+        days_left = stock / daily_velocity if daily_velocity > 0 else None
+        recommended_restock = max(0, round(30 * daily_velocity - stock)) if daily_velocity > 0 else 0
+        items.append({
+            "nm_id": nm_id,
+            "title": names.get(nm_id) or str(nm_id),
+            "vendor_code": vendor_codes.get(nm_id, ""),
+            "fbo_stock": stock,
+            "qty30": qty30,
+            "days_left": round(days_left, 1) if days_left is not None else None,
+            "recommended_restock": recommended_restock,
+        })
+    return {"items": items}
 
 
 @app.get("/api/cabinets/{cabinet_id}/ozon/promotions")

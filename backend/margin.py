@@ -43,9 +43,37 @@ def _accumulate(bucket, row):
         bucket["qty"] += int(row.get("quantity") or 0)
 
 
-def build_margin_summary(client=None, cost_prices=None, days: int = 30, date_from: str = None, date_to: str = None) -> dict:
+def fetch_rows(client, fetch_from: datetime.date, d_to: datetime.date) -> list:
+    """The slow part: pulls raw sales-report detail rows from WB's
+    finance-api, which is hard-throttled to 1 request/minute per account —
+    a 30-day window alone can mean 15-20+ *report* chunks, each needing at
+    least one throttled call (more if a report paginates). Callers should
+    cache this and re-aggregate locally instead of calling it per request —
+    see wb_sales_cache.py."""
+    log.info("Fetching sales report list...")
+    reports = client.get_sales_reports(fetch_from.isoformat(), d_to.isoformat(), period="weekly")
+    report_ids = sorted({r["reportId"] for r in reports})
+    log.info(f"{len(report_ids)} reports to pull detail for")
+
+    all_rows = []
+    for rid in report_ids:
+        all_rows.extend(client.get_report_detail(rid))
+    log.info(f"{len(all_rows)} detail rows fetched")
+    return all_rows
+
+
+def build_margin_summary(
+    client=None, cost_prices=None, days: int = 30, date_from: str = None, date_to: str = None,
+    rows: list = None, rows_cover_from: str = None,
+) -> dict:
     """`days` back from today, or an explicit [date_from, date_to] range —
-    same calling convention as ozon_margin.build_margin_summary."""
+    same calling convention as ozon_margin.build_margin_summary.
+
+    `rows` + `rows_cover_from`: pass already-fetched raw report rows (e.g.
+    from a cache) covering back to at least `rows_cover_from` (ISO date) to
+    skip the slow WB fetch entirely and just re-aggregate in memory. If the
+    requested window needs data older than that, this falls back to a live
+    fetch via `client` — same as when `rows` isn't passed at all."""
     client = client or wb_client.default_client
     if date_from and date_to:
         cutoff = datetime.date.fromisoformat(date_from)
@@ -56,15 +84,10 @@ def build_margin_summary(client=None, cost_prices=None, days: int = 30, date_fro
         cutoff = d_to - datetime.timedelta(days=days - 1)
     fetch_from = cutoff - datetime.timedelta(days=days)
 
-    log.info("Fetching sales report list...")
-    reports = client.get_sales_reports(fetch_from.isoformat(), d_to.isoformat(), period="weekly")
-    report_ids = sorted({r["reportId"] for r in reports})
-    log.info(f"{len(report_ids)} reports to pull detail for")
-
-    all_rows = []
-    for rid in report_ids:
-        all_rows.extend(client.get_report_detail(rid))
-    log.info(f"{len(all_rows)} detail rows fetched")
+    if rows is not None and rows_cover_from and datetime.date.fromisoformat(rows_cover_from) <= fetch_from:
+        all_rows = rows
+    else:
+        all_rows = fetch_rows(client, fetch_from, d_to)
 
     per_nm = collections.defaultdict(lambda: {
         **_empty_bucket(), "title": "", "vendor_code": "", "brand": "",

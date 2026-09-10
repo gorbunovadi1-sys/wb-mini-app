@@ -40,6 +40,22 @@ class Cabinet(Base):
     user = relationship("User", back_populates="cabinets")
 
 
+class WBSalesCache(Base):
+    """Raw WB sales-report rows for one cabinet, covering a rolling window
+    (period_from..period_to). WB's finance-api is throttled to 1 req/min and
+    a 30-day window alone needs 15-20+ throttled calls, so this is fetched
+    periodically by a background job (see wb_sales_cache.py) instead of on
+    every request — margin.build_margin_summary() re-aggregates from these
+    rows in memory (fast) instead of re-fetching from WB (slow)."""
+    __tablename__ = "wb_sales_cache"
+
+    cabinet_id = Column(Integer, ForeignKey("cabinets.id"), primary_key=True)
+    rows = Column(JSON, nullable=False)
+    period_from = Column(String, nullable=False)
+    period_to = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
 class CostPrice(Base):
     """Per-cabinet cost price, keyed by the marketplace's own item id —
     offer_id for Ozon, str(nm_id) for WB."""

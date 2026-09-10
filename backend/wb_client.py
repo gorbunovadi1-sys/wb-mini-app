@@ -12,6 +12,7 @@ ADVERT_BASE = "https://advert-api.wildberries.ru"
 STATS_BASE = "https://statistics-api.wildberries.ru"
 COMMON_BASE = "https://common-api.wildberries.ru"
 PRICES_BASE = "https://discounts-prices-api.wildberries.ru"
+ANALYTICS_BASE = "https://seller-analytics-api.wildberries.ru"
 
 # The finance-reports endpoints share a strict 1 request/minute limit, per account.
 _FINANCE_MIN_INTERVAL = 61
@@ -182,6 +183,29 @@ class WBClient:
                 break
             offset += limit
         return items
+
+    def create_warehouse_remains_task(self):
+        """Starts WB's async "остатки на складах" (FBO stock) report —
+        the old synchronous /api/v1/supplier/stocks is deprecated. Grouped
+        by seller article, nmID, and barcode so each row is one product."""
+        r = requests.get(
+            f"{ANALYTICS_BASE}/api/v1/warehouse_remains",
+            headers=self.headers,
+            params={"groupBySa": "true", "groupByNm": "true", "groupByBarcode": "true"},
+            timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()["data"]["taskId"]
+
+    def get_warehouse_remains_result(self, task_id):
+        """Returns the report rows once ready, or None while WB is still
+        generating it (it responds 429 for both "still working" and real
+        rate-limiting — either way the caller should just wait and retry)."""
+        r = requests.get(f"{ANALYTICS_BASE}/api/v1/warehouse_remains/tasks/{task_id}/download", headers=self.headers, timeout=30)
+        if r.status_code == 429:
+            return None
+        r.raise_for_status()
+        return r.json()
 
     def get_campaign_details(self, advert_ids):
         results = []
