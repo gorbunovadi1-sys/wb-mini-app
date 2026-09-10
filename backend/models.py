@@ -17,6 +17,9 @@ class User(Base):
     is_blocked = Column(Boolean, default=False, nullable=False)
     # NULL = unlimited access (default for everyone until explicitly time-limited).
     access_until = Column(DateTime, nullable=True)
+    # NULL = unlimited cabinets (default). Set via /limit to cap how many
+    # cabinets someone can connect — e.g. for a "1 кабинет = 1000₽" tariff.
+    max_cabinets = Column(Integer, nullable=True)
 
     cabinets = relationship("Cabinet", back_populates="user", cascade="all, delete-orphan")
 

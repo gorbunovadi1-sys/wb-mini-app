@@ -36,6 +36,7 @@ def _migrate():
     statements = [
         f"ALTER TABLE users ADD COLUMN is_blocked BOOLEAN NOT NULL DEFAULT {bool_default}",
         "ALTER TABLE users ADD COLUMN access_until TIMESTAMP",
+        "ALTER TABLE users ADD COLUMN max_cabinets INTEGER",
     ]
     with engine.connect() as conn:
         for stmt in statements:

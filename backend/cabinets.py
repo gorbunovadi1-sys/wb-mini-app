@@ -149,6 +149,7 @@ def get_admin_stats() -> dict:
                 "created_at": u.created_at,
                 "is_blocked": u.is_blocked,
                 "access_until": u.access_until,
+                "max_cabinets": u.max_cabinets,
                 "cabinets": [
                     {"marketplace": c.marketplace, "display_name": c.display_name, "last_synced_at": c.last_synced_at}
                     for c in cabs
@@ -192,6 +193,32 @@ def grant_access_days(telegram_user_id: int, days: int) -> bool:
         base = user.access_until if (user.access_until and user.access_until > now) else now
         user.access_until = base + datetime.timedelta(days=days)
         user.is_blocked = False
+        session.commit()
+        return True
+
+
+def check_cabinet_limit(telegram_user_id: int):
+    """Raises AccessDenied("cabinet_limit") if this user is already at their
+    max_cabinets cap (counting active cabinets only) — checked before
+    onboarding a new one. NULL/no row means unlimited, same opt-out
+    philosophy as check_access. Used for tariffs like "1 кабинет = 1000₽"
+    where the user shouldn't be able to just connect more for free."""
+    with SessionLocal() as session:
+        user = session.query(User).filter_by(telegram_user_id=telegram_user_id).first()
+        if not user or user.max_cabinets is None:
+            return
+        current = session.query(Cabinet).filter_by(user_id=user.id, is_active=True).count()
+        if current >= user.max_cabinets:
+            raise AccessDenied("cabinet_limit")
+
+
+def set_max_cabinets(telegram_user_id: int, max_cabinets) -> bool:
+    """max_cabinets=None (or <=0) clears the cap (unlimited)."""
+    with SessionLocal() as session:
+        user = session.query(User).filter_by(telegram_user_id=telegram_user_id).first()
+        if not user:
+            return False
+        user.max_cabinets = max_cabinets if (max_cabinets and max_cabinets > 0) else None
         session.commit()
         return True
 

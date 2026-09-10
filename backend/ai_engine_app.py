@@ -226,6 +226,7 @@ async def on_startup():
                     BotCommand(command="access", description="Выдать доступ: /access id дней"),
                     BotCommand(command="block", description="Заблокировать: /block id"),
                     BotCommand(command="unblock", description="Разблокировать: /unblock id"),
+                    BotCommand(command="limit", description="Лимит кабинетов: /limit id N"),
                     BotCommand(command="help", description="Памятка по всем командам"),
                 ],
                 scope=BotCommandScopeChat(chat_id=int(admin_id)),

@@ -120,6 +120,8 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
             "  пример: /block 460816761\n\n"
             "/unblock <id> — снять блокировку\n"
             "  пример: /unblock 460816761\n\n"
+            "/limit <id> <N> — ограничить число кабинетов (0 — снять лимит)\n"
+            "  пример: /limit 460816761 1\n\n"
             "id пользователя смотри в выводе /admin."
         )
 
@@ -137,7 +139,8 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
                 access = f"до {u['access_until'].strftime('%d.%m.%Y')}"
             else:
                 access = "безлимит"
-            header = f"👤 {name} (id {u['telegram_user_id']}) — {access}"
+            limit_note = f", лимит кабинетов {u['max_cabinets']}" if u.get("max_cabinets") else ""
+            header = f"👤 {name} (id {u['telegram_user_id']}) — {access}{limit_note}"
             if not u["cabinets"]:
                 lines.append(f"{header}, кабинетов нет")
                 continue
@@ -181,8 +184,31 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
         ok = cabinets.grant_access_days(int(parts[1]), int(parts[2]))
         await message.answer(f"✓ Доступ продлён на {parts[2]} дн." if ok else "Пользователь не найден.")
 
+    @dp.message(Command("limit"))
+    async def limit_cmd(message: Message):
+        if not _is_admin(message.from_user.id):
+            return
+        parts = message.text.split()
+        if len(parts) != 3 or not parts[1].lstrip("-").isdigit() or not parts[2].lstrip("-").isdigit():
+            await message.answer("Использование: /limit <telegram_id> <макс. кабинетов>\n0 — снять лимит (безлимит).")
+            return
+        n = int(parts[2])
+        ok = cabinets.set_max_cabinets(int(parts[1]), n)
+        if not ok:
+            await message.answer("Пользователь не найден.")
+        elif n <= 0:
+            await message.answer("✓ Лимит кабинетов снят (безлимит).")
+        else:
+            await message.answer(f"✓ Лимит кабинетов установлен: {n}.")
+
     @dp.callback_query(F.data == "connect_wb")
     async def connect_wb(callback: CallbackQuery, state: FSMContext):
+        try:
+            cabinets.check_cabinet_limit(callback.from_user.id)
+        except cabinets.AccessDenied:
+            await callback.message.answer("Достигнут лимит подключённых кабинетов для твоего доступа. Обратись к администратору, чтобы расширить.")
+            await callback.answer()
+            return
         await state.set_state(Onboarding.entering_wb_key)
         await callback.message.answer(
             "Пришли API-ключ Wildberries (личный кабинет WB → Настройки → Доступ к API → "
@@ -193,6 +219,12 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
 
     @dp.callback_query(F.data == "connect_ozon")
     async def connect_ozon(callback: CallbackQuery, state: FSMContext):
+        try:
+            cabinets.check_cabinet_limit(callback.from_user.id)
+        except cabinets.AccessDenied:
+            await callback.message.answer("Достигнут лимит подключённых кабинетов для твоего доступа. Обратись к администратору, чтобы расширить.")
+            await callback.answer()
+            return
         await state.set_state(Onboarding.entering_ozon_client_id)
         await callback.message.answer(
             "Пришли Client-Id кабинета Ozon (Настройки → Seller API в личном кабинете Ozon) — "
