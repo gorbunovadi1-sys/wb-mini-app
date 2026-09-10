@@ -33,6 +33,20 @@ class OzonClient:
             "Content-Type": "application/json",
         }
 
+    def _retry_delay(self, r, attempt: int) -> int:
+        """Ozon's own Retry-After under sustained rate-limiting has been
+        observed to repeat a lowball value (e.g. "1") on every single retry —
+        honoring it verbatim meant our own escalating backoff never actually
+        ran (attempt N always waited the same ~1s Ozon claimed was enough),
+        so 8 retries burned through in ~8s and still failed. Take whichever
+        is longer: Ozon's stated value, or our own escalating schedule."""
+        escalating = min(5 * (attempt + 1), 30)
+        try:
+            header_value = int(r.headers.get("Retry-After") or 0)
+        except (TypeError, ValueError):
+            header_value = 0
+        return max(escalating, header_value)
+
     def _post(self, path, payload, timeout=60):
         r = None
         for attempt in range(8):
@@ -40,7 +54,7 @@ class OzonClient:
             if r.status_code != 429:
                 r.raise_for_status()
                 return r.json()
-            retry_after = int(r.headers.get("Retry-After") or min(5 * (attempt + 1), 30))
+            retry_after = self._retry_delay(r, attempt)
             log.warning(f"429 from {path}, retrying in {retry_after}s (attempt {attempt + 1})")
             time.sleep(retry_after)
         r.raise_for_status()
@@ -53,7 +67,7 @@ class OzonClient:
             if r.status_code != 429:
                 r.raise_for_status()
                 return r.json()
-            retry_after = int(r.headers.get("Retry-After") or min(5 * (attempt + 1), 30))
+            retry_after = self._retry_delay(r, attempt)
             log.warning(f"429 from {path}, retrying in {retry_after}s (attempt {attempt + 1})")
             time.sleep(retry_after)
         r.raise_for_status()

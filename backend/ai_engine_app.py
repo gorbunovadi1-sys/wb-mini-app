@@ -206,6 +206,7 @@ async def _refresh_ozon_caches():
             await asyncio.to_thread(ozon_sales_cache.refresh, client, cabinet["id"])
         except Exception:
             log.exception(f"Ozon sales cache refresh failed for cabinet {cabinet['id']}")
+        await asyncio.sleep(3)  # small gap between cabinets — avoids a startup burst across many cabinets at once
 
 
 @app.on_event("startup")
