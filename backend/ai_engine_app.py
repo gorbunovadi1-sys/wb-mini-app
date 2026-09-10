@@ -179,13 +179,19 @@ async def _run_dimension_checks(bot):
     await asyncio.gather(*[_check_dimensions_one(c, bot, semaphore) for c in cabs])
 
 
-async def _refresh_wb_caches():
+async def _refresh_wb_caches(skip_if_fresh: bool = False):
     """Runs periodically: re-fetches WB's slow finance-api sales-report rows
     for every active WB cabinet into wb_sales_cache, so the margin/stock
     endpoints can serve from cache (fast) instead of hitting WB live — a
     live 30-day fetch can take 15-20+ minutes due to WB's 1 req/min
-    finance-api throttle and a real cabinet needing 15-20+ report chunks."""
+    finance-api throttle and a real cabinet needing 15-20+ report chunks.
+    `skip_if_fresh` (used only for the startup kick-off) skips a cabinet
+    whose cache was refreshed minutes ago — several redeploys in a row would
+    otherwise each redo the same expensive fetch for every cabinet."""
     for cabinet in cabinets.list_all_active_cabinets(marketplace="wb"):
+        if skip_if_fresh and wb_sales_cache.refreshed_recently(cabinet["id"]):
+            log.info(f"WB sales cache for cabinet {cabinet['id']} is recent — skipping startup refresh")
+            continue
         try:
             client = WBClient(cabinet["credentials"]["api_key"])
             await asyncio.to_thread(wb_sales_cache.refresh, client, cabinet["id"])
@@ -193,14 +199,21 @@ async def _refresh_wb_caches():
             log.exception(f"WB sales cache refresh failed for cabinet {cabinet['id']}")
 
 
-async def _refresh_ozon_caches():
+async def _refresh_ozon_caches(skip_if_fresh: bool = False):
     """Runs periodically: re-fetches Ozon FBS+FBO postings and per-day
     accrual breakdown for every active Ozon cabinet into ozon_sales_cache, so
     the /margin endpoint (shared by Дашборд/Детализация/Аналитика) can serve
     from cache instead of redoing a full live fetch on every tab open — that
     repetition alone (4 posting-list calls + one accrual call per day) was
-    enough to trigger sustained 429s from Ozon during normal browsing."""
+    enough to trigger sustained 429s from Ozon during normal browsing.
+    `skip_if_fresh` (used only for the startup kick-off) skips a cabinet
+    whose cache was refreshed minutes ago — several redeploys in a row would
+    otherwise each fire a fresh full-account burst across every cabinet,
+    exactly the kind of repeated load that trips Ozon's rate limiting."""
     for cabinet in cabinets.list_all_active_cabinets(marketplace="ozon"):
+        if skip_if_fresh and ozon_sales_cache.refreshed_recently(cabinet["id"]):
+            log.info(f"Ozon sales cache for cabinet {cabinet['id']} is recent — skipping startup refresh")
+            continue
         try:
             client = OzonClient(cabinet["credentials"]["client_id"], cabinet["credentials"]["api_key"])
             await asyncio.to_thread(ozon_sales_cache.refresh, client, cabinet["id"])
@@ -263,8 +276,8 @@ async def on_startup():
         scheduler.add_job(_refresh_ozon_caches, "interval", hours=3)
         scheduler.start()
         log.info("Scheduled: акции every 10 min, маржа every hour, габариты once a day, WB+Ozon sales cache every 3 hours")
-        asyncio.create_task(_refresh_wb_caches())
-        asyncio.create_task(_refresh_ozon_caches())
+        asyncio.create_task(_refresh_wb_caches(skip_if_fresh=True))
+        asyncio.create_task(_refresh_ozon_caches(skip_if_fresh=True))
         log.info("Kicked off initial WB+Ozon sales cache refreshes (not waiting for the first 3h tick)")
     else:
         log.info("AI_ENGINE_BOT_TOKEN not set — bot polling not started")
@@ -337,13 +350,15 @@ def get_cabinet_margin(
     user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
     cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
     # A live (cache-miss) fetch here happens inside an HTTP request a tab is
-    # waiting on — the platform's own reverse-proxy timeout will kill it long
+    # waiting on — the platform's own reverse-proxy timeout kills it well
     # before OzonClient's full patient 8-retry schedule (up to ~165s on one
-    # call) finishes, coming back as a bare, unhelpful 502. Fail fast instead
-    # (3 attempts, ~30s worst case on one call) so a genuine sustained block
-    # comes back as our own clear error message — the background cache
-    # refresh (ozon_sales_cache) uses the full patient schedule separately.
-    client = _build_client(cabinet, ozon_max_retries=3)
+    # call) finishes, coming back as a bare, unhelpful 502. Even a 3-attempt
+    # (~30s) budget was observed still occasionally losing that race in
+    # production, so this stays short (2 attempts, ~15s worst case on one
+    # call) — the background cache refresh (ozon_sales_cache) is what's
+    # meant to actually recover from a sustained block, using the full
+    # patient schedule separately and not racing any proxy timeout.
+    client = _build_client(cabinet, ozon_max_retries=2)
     cost_prices = cabinets.get_cost_prices(cabinet_id)
     try:
         if cabinet["marketplace"] == "wb":

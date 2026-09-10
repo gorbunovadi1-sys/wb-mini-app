@@ -15,6 +15,12 @@ log = logging.getLogger("ozon_sales_cache")
 # which still falls back to a live fetch.
 WINDOW_DAYS = 180
 STALE_AFTER = datetime.timedelta(hours=4)
+# A much shorter window than STALE_AFTER, used only to decide whether a
+# just-started process should skip its startup refresh — several redeploys
+# in quick succession (a debugging session, say) would otherwise each kick
+# off a fresh full-account burst across every cabinet, which is exactly the
+# kind of repeated load that trips Ozon's rate limiting in the first place.
+RECENTLY_REFRESHED_WITHIN = datetime.timedelta(minutes=30)
 
 
 def refresh(client, cabinet_id: int):
@@ -47,6 +53,16 @@ def refresh(client, cabinet_id: int):
             ))
         session.commit()
     log.info(f"Refreshed Ozon sales cache for cabinet {cabinet_id}: {len(postings)} postings, {len(accrual_by_date)} accrual days")
+
+
+def refreshed_recently(cabinet_id: int) -> bool:
+    """True if this cabinet's cache was refreshed within RECENTLY_REFRESHED_WITHIN —
+    used to skip a redundant startup refresh right after a redeploy."""
+    with SessionLocal() as session:
+        cached = session.get(OzonSalesCache, cabinet_id)
+        if not cached:
+            return False
+        return datetime.datetime.utcnow() - cached.updated_at <= RECENTLY_REFRESHED_WITHIN
 
 
 def get(cabinet_id: int):
