@@ -59,6 +59,27 @@ class WBSalesCache(Base):
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
 
+class OzonSalesCache(Base):
+    """Raw Ozon FBS+FBO postings (with financial_data) and per-day accrual
+    breakdown for one cabinet, covering a rolling window — same idea as
+    WBSalesCache. Interactive tab-switching alone (Дашборд/Детализация/
+    Аналитика each independently call ozon_margin.build_margin_summary) was
+    enough to trigger sustained 429s from Ozon, since every tab open redid a
+    full live fetch: 4 posting-list calls plus one accrual/by-day call per
+    day in the period. This is refreshed periodically in the background
+    instead (see ozon_sales_cache.py) and build_margin_summary re-aggregates
+    from these cached rows when they cover the requested range."""
+    __tablename__ = "ozon_sales_cache"
+
+    cabinet_id = Column(Integer, ForeignKey("cabinets.id"), primary_key=True)
+    postings = Column(JSON, nullable=False)
+    accrual_by_date = Column(JSON, nullable=False)  # {date: {sku: {commission, delivery, item_fees}}}
+    non_item_by_date = Column(JSON, nullable=False)  # {date: float}
+    period_from = Column(String, nullable=False)
+    period_to = Column(String, nullable=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
 class CostPrice(Base):
     """Per-cabinet cost price, keyed by the marketplace's own item id —
     offer_id for Ozon, str(nm_id) for WB."""

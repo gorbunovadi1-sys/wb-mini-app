@@ -21,6 +21,7 @@ from . import ozon_pricing
 from . import ozon_promo_guard
 from . import ozon_promotions
 from . import ozon_promotions_detail
+from . import ozon_sales_cache
 from . import wb_ads
 from . import wb_prices
 from . import wb_sales_cache
@@ -192,6 +193,21 @@ async def _refresh_wb_caches():
             log.exception(f"WB sales cache refresh failed for cabinet {cabinet['id']}")
 
 
+async def _refresh_ozon_caches():
+    """Runs periodically: re-fetches Ozon FBS+FBO postings and per-day
+    accrual breakdown for every active Ozon cabinet into ozon_sales_cache, so
+    the /margin endpoint (shared by Дашборд/Детализация/Аналитика) can serve
+    from cache instead of redoing a full live fetch on every tab open — that
+    repetition alone (4 posting-list calls + one accrual call per day) was
+    enough to trigger sustained 429s from Ozon during normal browsing."""
+    for cabinet in cabinets.list_all_active_cabinets(marketplace="ozon"):
+        try:
+            client = OzonClient(cabinet["credentials"]["client_id"], cabinet["credentials"]["api_key"])
+            await asyncio.to_thread(ozon_sales_cache.refresh, client, cabinet["id"])
+        except Exception:
+            log.exception(f"Ozon sales cache refresh failed for cabinet {cabinet['id']}")
+
+
 @app.on_event("startup")
 async def on_startup():
     init_db()
@@ -243,10 +259,12 @@ async def on_startup():
         scheduler.add_job(_run_margin_checks, "interval", hours=1, args=[bot])
         scheduler.add_job(_run_dimension_checks, "interval", hours=24, args=[bot])
         scheduler.add_job(_refresh_wb_caches, "interval", hours=3)
+        scheduler.add_job(_refresh_ozon_caches, "interval", hours=3)
         scheduler.start()
-        log.info("Scheduled: акции every 10 min, маржа every hour, габариты once a day, WB sales cache every 3 hours")
+        log.info("Scheduled: акции every 10 min, маржа every hour, габариты once a day, WB+Ozon sales cache every 3 hours")
         asyncio.create_task(_refresh_wb_caches())
-        log.info("Kicked off an initial WB sales cache refresh (not waiting for the first 3h tick)")
+        asyncio.create_task(_refresh_ozon_caches())
+        log.info("Kicked off initial WB+Ozon sales cache refreshes (not waiting for the first 3h tick)")
     else:
         log.info("AI_ENGINE_BOT_TOKEN not set — bot polling not started")
 
@@ -326,8 +344,12 @@ def get_cabinet_margin(
                 rows=rows, rows_cover_from=rows_cover_from,
             )
         tax_pct = cabinet.get("settings", {}).get("tax_pct", 0)
+        cached = ozon_sales_cache.get(cabinet_id)
+        cpostings, caccrual, cnonitem, ccover_from = (cached[0], cached[1], cached[2], cached[3]) if cached else (None, None, None, None)
         return ozon_margin.build_margin_summary(
             client=client, cost_prices=cost_prices, days=days, date_from=date_from, date_to=date_to, tax_pct=tax_pct,
+            cached_postings=cpostings, cached_accrual_by_date=caccrual,
+            cached_non_item_by_date=cnonitem, cache_cover_from=ccover_from,
         )
     except Exception as e:
         log.exception(f"Failed to build margin for cabinet {cabinet_id}")

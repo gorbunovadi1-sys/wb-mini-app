@@ -82,46 +82,100 @@ def _accrual_amount(obj, *path):
         return 0.0
 
 
+def _fetch_accrual_for_day(client, date_str: str):
+    """One day's accrual breakdown: real per-SKU commission + delivery (from
+    accrual/by-day's POSTING category — the seller_price/commission/
+    delivery.total_accrued triple reconciles exactly to what Ozon actually
+    paid out, verified live) plus per-SKU other item-level fees (ITEM
+    category) and account-wide fees not tied to any one product (NON_ITEM).
+    Returns ({sku: {commission, delivery, item_fees}}, non_item_total)."""
+    per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0})
+    non_item_total = 0.0
+    try:
+        accruals = client.get_accrual_by_day(date_str)
+    except Exception:
+        log.exception(f"accrual/by-day failed for {date_str}, treating as empty")
+        accruals = []
+    for a in accruals:
+        cat = a.get("accrued_category")
+        if cat == "POSTING":
+            for prod in ((a.get("posting") or {}).get("products") or []):
+                sku = prod.get("sku")
+                if not sku:
+                    continue
+                commission = prod.get("commission") or {}
+                delivery = prod.get("delivery") or {}
+                per_sku[sku]["commission"] += _accrual_amount(commission, "commission", "amount")
+                per_sku[sku]["delivery"] += _accrual_amount(delivery, "total_accrued", "amount")
+        elif cat == "ITEM":
+            for fee_group in ((a.get("item_fees") or {}).get("fees") or []):
+                sku = fee_group.get("sku")
+                if not sku:
+                    continue
+                for fee in (fee_group.get("fees") or []):
+                    per_sku[sku]["item_fees"] += _accrual_amount(fee, "accrued", "amount")
+        elif cat == "NON_ITEM":
+            non_item_total += _accrual_amount(a, "non_item_fee", "accrued", "amount")
+    return dict(per_sku), non_item_total
+
+
 def _fetch_accrual_breakdown(client, date_from: datetime.date, date_to: datetime.date):
-    """Real per-SKU commission + delivery (from accrual/by-day's POSTING
-    category — the seller_price/commission/delivery.total_accrued triple
-    reconciles exactly to what Ozon actually paid out, verified live) plus
-    per-SKU other item-level fees (ITEM category, tied to the same SKU) and
-    account-wide fees that aren't tied to any one product (NON_ITEM). One
-    call per day in the range — same cost as the old other-fees fetch, just
-    reading more fields out of the same response."""
+    """Real per-SKU commission/delivery/fees summed over a date range — one
+    call per day, used for the live (uncached) path."""
     per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0})
     non_item_total = 0.0
     d = date_from
     while d <= date_to:
-        try:
-            accruals = client.get_accrual_by_day(d.isoformat())
-        except Exception:
-            log.exception(f"accrual/by-day failed for {d.isoformat()}, treating as empty")
-            accruals = []
-        for a in accruals:
-            cat = a.get("accrued_category")
-            if cat == "POSTING":
-                for prod in ((a.get("posting") or {}).get("products") or []):
-                    sku = prod.get("sku")
-                    if not sku:
-                        continue
-                    commission = prod.get("commission") or {}
-                    delivery = prod.get("delivery") or {}
-                    per_sku[sku]["commission"] += _accrual_amount(commission, "commission", "amount")
-                    per_sku[sku]["delivery"] += _accrual_amount(delivery, "total_accrued", "amount")
-            elif cat == "ITEM":
-                for fee_group in ((a.get("item_fees") or {}).get("fees") or []):
-                    sku = fee_group.get("sku")
-                    if not sku:
-                        continue
-                    for fee in (fee_group.get("fees") or []):
-                        per_sku[sku]["item_fees"] += _accrual_amount(fee, "accrued", "amount")
-            elif cat == "NON_ITEM":
-                non_item_total += _accrual_amount(a, "non_item_fee", "accrued", "amount")
+        day_sku, day_non_item = _fetch_accrual_for_day(client, d.isoformat())
+        for sku, vals in day_sku.items():
+            per_sku[sku]["commission"] += vals["commission"]
+            per_sku[sku]["delivery"] += vals["delivery"]
+            per_sku[sku]["item_fees"] += vals["item_fees"]
+        non_item_total += day_non_item
         d += datetime.timedelta(days=1)
         time.sleep(0.05)
     return per_sku, non_item_total
+
+
+def fetch_accrual_by_date(client, date_from: datetime.date, date_to: datetime.date):
+    """Same per-day accrual fetch, but keeps each day separate instead of
+    summing — lets a cached window be sliced to any sub-range later. Used by
+    ozon_sales_cache.refresh(), not the live per-request path."""
+    accrual_by_date = {}
+    non_item_by_date = {}
+    d = date_from
+    while d <= date_to:
+        day_sku, day_non_item = _fetch_accrual_for_day(client, d.isoformat())
+        accrual_by_date[d.isoformat()] = day_sku
+        non_item_by_date[d.isoformat()] = day_non_item
+        d += datetime.timedelta(days=1)
+        time.sleep(0.05)
+    return accrual_by_date, non_item_by_date
+
+
+def _slice_accrual_by_date(accrual_by_date: dict, non_item_by_date: dict, date_from: datetime.date, date_to: datetime.date):
+    per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0})
+    non_item_total = 0.0
+    d = date_from
+    while d <= date_to:
+        key = d.isoformat()
+        for sku, vals in (accrual_by_date.get(key) or {}).items():
+            per_sku[sku]["commission"] += vals["commission"]
+            per_sku[sku]["delivery"] += vals["delivery"]
+            per_sku[sku]["item_fees"] += vals["item_fees"]
+        non_item_total += non_item_by_date.get(key, 0.0)
+        d += datetime.timedelta(days=1)
+    return per_sku, non_item_total
+
+
+def _posting_date(posting: dict) -> str:
+    ts = posting.get("in_process_at") or posting.get("created_at") or ""
+    return ts[:10]
+
+
+def _slice_postings(postings: list, date_from: datetime.date, date_to: datetime.date) -> list:
+    lo, hi = date_from.isoformat(), date_to.isoformat()
+    return [p for p in postings if lo <= _posting_date(p) <= hi]
 
 
 def build_margin_summary(
@@ -131,6 +185,10 @@ def build_margin_summary(
     date_from: str = None,
     date_to: str = None,
     tax_pct: float = 0,
+    cached_postings: list = None,
+    cached_accrual_by_date: dict = None,
+    cached_non_item_by_date: dict = None,
+    cache_cover_from: str = None,
 ) -> dict:
     """Everything here — orders, buyouts, commission, delivery, fees, cost
     prices, tax, profit, margin — is computed for the SAME single period
@@ -138,7 +196,13 @@ def build_margin_summary(
     range). Commission/delivery/item-fees come from accrual/by-day (real,
     per-SKU); postings only supply revenue/qty and order-vs-buyout status.
     `tax_pct` is charged on sale price (revenue), not on what Ozon pays out —
-    matches how a seller's own turnover-based tax (УСН "доходы" etc.) works."""
+    matches how a seller's own turnover-based tax (УСН "доходы" etc.) works.
+
+    If `cached_*` (from ozon_sales_cache) cover the requested range plus the
+    prior period needed for comparison, everything is sliced from them
+    in-memory instead of calling Ozon live — repeating the live fetch on
+    every tab open (Дашборд/Детализация/Аналитика each call this
+    independently) was on its own enough to trigger sustained 429s."""
     client = client or ozon_client.default_client
 
     if date_from and date_to:
@@ -155,9 +219,20 @@ def build_margin_summary(
     iso_from, iso_to = f"{d_from.isoformat()}T00:00:00Z", f"{d_to.isoformat()}T23:59:59Z"
     prev_iso_from, prev_iso_to = f"{prev_d_from.isoformat()}T00:00:00Z", f"{prev_d_to.isoformat()}T23:59:59Z"
 
-    log.info(f"Fetching Ozon postings for {d_from}..{d_to} (and prior period for comparison)...")
-    postings = client.get_fbs_postings(iso_from, iso_to) + client.get_fbo_postings(iso_from, iso_to)
-    prev_postings = client.get_fbs_postings(prev_iso_from, prev_iso_to) + client.get_fbo_postings(prev_iso_from, prev_iso_to)
+    use_cache = (
+        cached_postings is not None and cached_accrual_by_date is not None
+        and cache_cover_from is not None
+        and datetime.date.fromisoformat(cache_cover_from) <= prev_d_from
+    )
+
+    if use_cache:
+        log.info(f"Serving Ozon margin for {d_from}..{d_to} from cache ({len(cached_postings)} cached postings)")
+        postings = _slice_postings(cached_postings, d_from, d_to)
+        prev_postings = _slice_postings(cached_postings, prev_d_from, prev_d_to)
+    else:
+        log.info(f"Fetching Ozon postings for {d_from}..{d_to} (and prior period for comparison)...")
+        postings = client.get_fbs_postings(iso_from, iso_to) + client.get_fbo_postings(iso_from, iso_to)
+        prev_postings = client.get_fbs_postings(prev_iso_from, prev_iso_to) + client.get_fbo_postings(prev_iso_from, prev_iso_to)
 
     per_offer_orders = collections.defaultdict(_empty_bucket)
     per_offer_buyouts = collections.defaultdict(_empty_bucket)
@@ -175,8 +250,11 @@ def build_margin_summary(
         _empty_bucket(), prev_totals_buyouts, {},
     )
 
-    log.info(f"Fetching accrual breakdown (commission, delivery, fees) for {d_from}..{d_to}...")
-    per_sku_accrual, non_item_total = _fetch_accrual_breakdown(client, d_from, d_to)
+    if use_cache:
+        per_sku_accrual, non_item_total = _slice_accrual_by_date(cached_accrual_by_date, cached_non_item_by_date, d_from, d_to)
+    else:
+        log.info(f"Fetching accrual breakdown (commission, delivery, fees) for {d_from}..{d_to}...")
+        per_sku_accrual, non_item_total = _fetch_accrual_breakdown(client, d_from, d_to)
     other_fees_cost = abs(non_item_total)
 
     # Roll per-SKU accrual up to per-offer (an offer normally maps to one SKU;
