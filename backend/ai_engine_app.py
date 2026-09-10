@@ -47,58 +47,17 @@ async def _notify(bot, cabinet: dict, text: str):
         log.exception(f"Failed to notify user for cabinet {cabinet['id']}")
 
 
-async def _check_one_cabinet(cabinet: dict, bot, semaphore: "asyncio.Semaphore"):
-    settings = cabinet.get("settings", {})
+async def _check_promo_one(cabinet: dict, bot, semaphore: "asyncio.Semaphore"):
     async with semaphore:
         try:
-            # All make blocking HTTP calls to Ozon — run off the event loop
-            # so one slow/hanging cabinet can't stall the bot or API for
-            # everyone else (matters once this scales past a handful of cabinets).
-            new_below_margin = await asyncio.to_thread(ozon_price_monitor.check_cabinet, cabinet)
-        except Exception:
-            new_below_margin = []
-            log.exception(f"Price check failed for cabinet {cabinet['id']}")
-        try:
+            # Blocking HTTP calls to Ozon — run off the event loop so one
+            # slow/hanging cabinet can't stall the bot or API for everyone else.
             promo_result = await asyncio.to_thread(ozon_promo_guard.check_and_clean_cabinet, cabinet)
         except Exception:
             promo_result = {"removed": [], "joined": []}
             log.exception(f"Promo guard failed for cabinet {cabinet['id']}")
-        dimension_events = []
-        if settings.get("notify_dimension_changes", True):
-            try:
-                creds = cabinet["credentials"]
-                dim_client = OzonClient(creds["client_id"], creds["api_key"])
-                dim_result = await asyncio.to_thread(ozon_dimensions.refresh_dimensions, client=dim_client, cabinet_id=str(cabinet["id"]))
-                dimension_events = [e for e in dim_result.get("recent_events", []) if e["at"] == dim_result["generated_at"]]
-            except Exception:
-                log.exception(f"Dimension check failed for cabinet {cabinet['id']}")
-
-            if dimension_events:
-                # A dimension change shifts Ozon's own logistics estimate for the
-                # product — pull current price/margin so the notification shows
-                # the actual impact, not just "the size changed".
-                try:
-                    pricing = await asyncio.to_thread(ozon_pricing.get_pricing_list, dim_client, cabinet["id"])
-                    pricing_by_offer = {p["offer_id"]: p for p in pricing}
-                    for e in dimension_events:
-                        p = pricing_by_offer.get(e["offer_id"])
-                        if p:
-                            price = p["price"] or p["min_price"] or 0
-                            expense = price * (p["commission_pct"] / 100) + p["logistics_estimate"]
-                            profit = price - (p["cogs_unit"] or 0) - expense
-                            e["current_profit"] = round(profit, 2)
-                            e["current_margin_percent"] = round(profit / price * 100, 2) if price else None
-                except Exception:
-                    log.exception(f"Failed to enrich dimension events with profit for cabinet {cabinet['id']}")
 
     name = cabinet["display_name"] or cabinet["id"]
-    min_margin_pct = settings.get("min_margin_pct", 0)
-
-    if new_below_margin:
-        lines = [f"• {n['name']} ({n['offer_id']}): {n['profit']} ₽, маржа {n['margin_percent']}%" for n in new_below_margin]
-        threshold_note = "стали убыточными" if min_margin_pct <= 0 else f"опустились ниже заданной маржи ({min_margin_pct}%)"
-        text = f"⚠️ В кабинете «{name}» {len(new_below_margin)} товар(ов) {threshold_note}:\n\n" + "\n".join(lines)
-        await _notify(bot, cabinet, text)
 
     if promo_result["removed"]:
         lines = [
@@ -119,33 +78,104 @@ async def _check_one_cabinet(cabinet: dict, bot, semaphore: "asyncio.Semaphore")
         )
         await _notify(bot, cabinet, text)
 
-    if dimension_events:
-        def _dim_line(e):
-            base = f"• {e['title']} ({e['offer_id']}): {e['field_label']} {e['old_value']} → {e['new_value']} {e['unit']}"
-            if "current_profit" in e:
-                margin = f"{e['current_margin_percent']}%" if e["current_margin_percent"] is not None else "—"
-                base += f"\n  сейчас прибыль {e['current_profit']} ₽ (маржа {margin}) с учётом новой логистики"
-            return base
-        lines = [_dim_line(e) for e in dimension_events]
-        text = (
-            f"📐 В кабинете «{name}» изменились габариты/вес у {len(dimension_events)} товар(ов) — "
-            f"это влияет на логистику:\n\n" + "\n".join(lines)
-        )
-        await _notify(bot, cabinet, text)
 
-
-async def _run_price_checks(bot):
-    """Runs every 10 minutes for every active Ozon cabinet: (1) notifies the
-    owner about products that newly became loss-making (ozon_price_monitor
-    keeps a per-cabinet snapshot so already-known problems aren't re-reported
-    every cycle), and (2) automatically removes products from a promotion
-    when Ozon's own auto-add put them in at a losing price, notifying what
-    was removed and why. Cabinets are checked concurrently (capped at 5 in
-    flight) instead of one at a time so the total run time doesn't grow
-    linearly with the number of cabinets."""
+async def _run_promo_checks(bot):
+    """Runs every 10 minutes — kept frequent on purpose (unlike the margin and
+    dimension checks below) because a timely heads-up matters here: either
+    Ozon just auto-added products to a new promotion (notify-only mode) or
+    this just auto-removed something losing money, and both are worth
+    knowing about soon, not up to an hour later. Cabinets are checked
+    concurrently (capped at 5 in flight)."""
     cabs = cabinets.list_all_active_cabinets(marketplace="ozon")
     semaphore = asyncio.Semaphore(5)
-    await asyncio.gather(*[_check_one_cabinet(c, bot, semaphore) for c in cabs])
+    await asyncio.gather(*[_check_promo_one(c, bot, semaphore) for c in cabs])
+
+
+async def _check_margin_one(cabinet: dict, bot, semaphore: "asyncio.Semaphore"):
+    async with semaphore:
+        try:
+            new_below_margin = await asyncio.to_thread(ozon_price_monitor.check_cabinet, cabinet)
+        except Exception:
+            new_below_margin = []
+            log.exception(f"Price check failed for cabinet {cabinet['id']}")
+
+    if not new_below_margin:
+        return
+    name = cabinet["display_name"] or cabinet["id"]
+    min_margin_pct = cabinet.get("settings", {}).get("min_margin_pct", 0)
+    lines = [f"• {n['name']} ({n['offer_id']}): {n['profit']} ₽, маржа {n['margin_percent']}%" for n in new_below_margin]
+    threshold_note = "стали убыточными" if min_margin_pct <= 0 else f"опустились ниже заданной маржи ({min_margin_pct}%)"
+    text = f"⚠️ В кабинете «{name}» {len(new_below_margin)} товар(ов) {threshold_note}:\n\n" + "\n".join(lines)
+    await _notify(bot, cabinet, text)
+
+
+async def _run_margin_checks(bot):
+    """Runs once an hour — prices/margins don't usually swing fast enough to
+    need 10-minute polling, and this was one of the main contributors to
+    hitting Ozon's rate limit (it re-fetches the whole catalog's prices,
+    just like the promo check does independently)."""
+    cabs = cabinets.list_all_active_cabinets(marketplace="ozon")
+    semaphore = asyncio.Semaphore(5)
+    await asyncio.gather(*[_check_margin_one(c, bot, semaphore) for c in cabs])
+
+
+async def _check_dimensions_one(cabinet: dict, bot, semaphore: "asyncio.Semaphore"):
+    if not cabinet.get("settings", {}).get("notify_dimension_changes", True):
+        return
+    async with semaphore:
+        dimension_events = []
+        try:
+            creds = cabinet["credentials"]
+            dim_client = OzonClient(creds["client_id"], creds["api_key"])
+            dim_result = await asyncio.to_thread(ozon_dimensions.refresh_dimensions, client=dim_client, cabinet_id=str(cabinet["id"]))
+            dimension_events = [e for e in dim_result.get("recent_events", []) if e["at"] == dim_result["generated_at"]]
+        except Exception:
+            log.exception(f"Dimension check failed for cabinet {cabinet['id']}")
+
+        if dimension_events:
+            # A dimension change shifts Ozon's own logistics estimate for the
+            # product — pull current price/margin so the notification shows
+            # the actual impact, not just "the size changed".
+            try:
+                pricing = await asyncio.to_thread(ozon_pricing.get_pricing_list, dim_client, cabinet["id"])
+                pricing_by_offer = {p["offer_id"]: p for p in pricing}
+                for e in dimension_events:
+                    p = pricing_by_offer.get(e["offer_id"])
+                    if p:
+                        price = p["price"] or p["min_price"] or 0
+                        expense = price * (p["commission_pct"] / 100) + p["logistics_estimate"]
+                        profit = price - (p["cogs_unit"] or 0) - expense
+                        e["current_profit"] = round(profit, 2)
+                        e["current_margin_percent"] = round(profit / price * 100, 2) if price else None
+            except Exception:
+                log.exception(f"Failed to enrich dimension events with profit for cabinet {cabinet['id']}")
+
+    if not dimension_events:
+        return
+    name = cabinet["display_name"] or cabinet["id"]
+
+    def _dim_line(e):
+        base = f"• {e['title']} ({e['offer_id']}): {e['field_label']} {e['old_value']} → {e['new_value']} {e['unit']}"
+        if "current_profit" in e:
+            margin = f"{e['current_margin_percent']}%" if e["current_margin_percent"] is not None else "—"
+            base += f"\n  сейчас прибыль {e['current_profit']} ₽ (маржа {margin}) с учётом новой логистики"
+        return base
+
+    lines = [_dim_line(e) for e in dimension_events]
+    text = (
+        f"📐 В кабинете «{name}» изменились габариты/вес у {len(dimension_events)} товар(ов) — "
+        f"это влияет на логистику:\n\n" + "\n".join(lines)
+    )
+    await _notify(bot, cabinet, text)
+
+
+async def _run_dimension_checks(bot):
+    """Runs once a day — Ozon's catalog data doesn't shift often enough to
+    justify checking it every 10 minutes, and this was the third redundant
+    full-catalog-ish fetch happening in the same cycle as the other two."""
+    cabs = cabinets.list_all_active_cabinets(marketplace="ozon")
+    semaphore = asyncio.Semaphore(5)
+    await asyncio.gather(*[_check_dimensions_one(c, bot, semaphore) for c in cabs])
 
 
 async def _refresh_wb_caches():
@@ -208,10 +238,12 @@ async def on_startup():
         # AsyncIOScheduler (not BackgroundScheduler) so the job runs on the
         # same event loop as the bot — needed to call bot.send_message safely.
         scheduler = AsyncIOScheduler()
-        scheduler.add_job(_run_price_checks, "interval", minutes=10, args=[bot])
+        scheduler.add_job(_run_promo_checks, "interval", minutes=10, args=[bot])
+        scheduler.add_job(_run_margin_checks, "interval", hours=1, args=[bot])
+        scheduler.add_job(_run_dimension_checks, "interval", hours=24, args=[bot])
         scheduler.add_job(_refresh_wb_caches, "interval", hours=3)
         scheduler.start()
-        log.info("Price monitor scheduled every 10 minutes; WB sales cache refresh every 3 hours")
+        log.info("Scheduled: акции every 10 min, маржа every hour, габариты once a day, WB sales cache every 3 hours")
         asyncio.create_task(_refresh_wb_caches())
         log.info("Kicked off an initial WB sales cache refresh (not waiting for the first 3h tick)")
     else:
