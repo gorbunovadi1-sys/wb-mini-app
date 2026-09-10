@@ -21,6 +21,7 @@ from . import ozon_promo_guard
 from . import ozon_promotions
 from . import ozon_promotions_detail
 from . import wb_ads
+from . import wb_prices
 from .db import init_db
 from .ozon_client import OzonClient
 from .telegram_auth import parse_init_data_user, validate_init_data
@@ -295,6 +296,20 @@ def get_cabinet_ozon_pricing(
         raise HTTPException(status_code=400, detail="not an Ozon cabinet")
     client = _build_client(cabinet)
     return {"items": ozon_pricing.get_pricing_list(client, cabinet_id)}
+
+
+@app.get("/api/cabinets/{cabinet_id}/wb/pricing")
+def get_cabinet_wb_pricing(
+    cabinet_id: int,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+):
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
+    if cabinet["marketplace"] != "wb":
+        raise HTTPException(status_code=400, detail="not a WB cabinet")
+    client = _build_client(cabinet)
+    return {"items": wb_prices.get_price_list(client, cabinet_id)}
 
 
 @app.get("/api/cabinets/{cabinet_id}/ozon/promotions")

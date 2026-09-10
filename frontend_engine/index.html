@@ -369,7 +369,7 @@ async function boot() {
 function marketplaceCabinets(mp) { return cabinetsList.filter(c => c.marketplace === mp); }
 
 function resetCabinetCaches() {
-  lastMarginData = null; pricingItems = null; pendingPriceChanges = {}; stockItems = null;
+  lastMarginData = null; pricingItems = null; pendingPriceChanges = {}; stockItems = null; wbPricingItems = null;
   updatePushBar();
 }
 
@@ -831,10 +831,11 @@ function renderDetail(products) {
 // ==================== Цены ====================
 
 async function loadPricing() {
-  const el = document.getElementById('content');
   const cabinet = activeCabinet();
+  if (cabinet && cabinet.marketplace === 'wb') return loadPricingWB();
+  const el = document.getElementById('content');
   if (!cabinet || cabinet.marketplace !== 'ozon') {
-    el.innerHTML = '<div class="state-msg">Управление ценами пока доступно только для кабинетов Ozon.</div>';
+    el.innerHTML = '<div class="state-msg">Кабинет не выбран.</div>';
     return;
   }
   const reqView = activeView, reqCabinet = activeCabinetId;
@@ -854,6 +855,70 @@ async function loadPricing() {
     if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
     el.innerHTML = `<div class="state-msg">Не удалось загрузить цены.<br>${e.message}</div>`;
   }
+}
+
+let wbPricingItems = null;
+
+async function loadPricingWB() {
+  const el = document.getElementById('content');
+  const reqView = activeView, reqCabinet = activeCabinetId;
+  el.innerHTML = '<div class="state-msg">Загрузка цен…</div>';
+  try {
+    if (!wbPricingItems) {
+      const data = await apiFetch(`/api/cabinets/${activeCabinetId}/wb/pricing`);
+      if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
+      wbPricingItems = data.items;
+    }
+    renderPricingWB(wbPricingItems);
+  } catch (e) {
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить цены.<br>${e.message}</div>`;
+  }
+}
+
+function renderPricingWB(items) {
+  const el = document.getElementById('content');
+  el.innerHTML = `
+    <div class="notice" style="margin-bottom:2px">Только просмотр — для редактирования цен на WB нужен ключ с категорией «Цены и скидки» (не подключена сейчас). Прибыль — грубая оценка без вычета комиссии WB и логистики.</div>
+    <input class="search-box" id="wbPricingSearch" placeholder="Поиск по названию или артикулу…">
+    <div class="product-list" id="wbPricingList"></div>
+  `;
+  const searchEl = document.getElementById('wbPricingSearch');
+  const renderList = () => {
+    const q = searchEl.value.trim().toLowerCase();
+    const list = q
+      ? items.filter(i => (i.vendor_code || '').toLowerCase().includes(q) || String(i.nm_id).includes(q))
+      : items;
+    const listEl = document.getElementById('wbPricingList');
+    listEl.innerHTML = list.slice(0, 300).map(wbPriceCardHtml).join('') || '<div class="state-msg">Ничего не найдено</div>';
+    bindCogsHandlers(listEl, () => { wbPricingItems = null; loadPricingWB(); });
+  };
+  renderList();
+  searchEl.addEventListener('input', renderList);
+}
+
+function wbPriceCardHtml(p) {
+  return `<div class="product-card price-card" data-item="${p.nm_id}">
+    <div class="p-name">${p.vendor_code || p.nm_id}</div>
+    <div class="p-offer copy-chip" data-copy="${p.nm_id}">${p.nm_id}</div>
+    <div class="price-summary">
+      <span>Цена: ${fmtMoney(p.price || 0)}</span>
+      <span>Скидка: ${p.discount || 0}%</span>
+    </div>
+    <div class="price-summary">
+      <span>К оплате: ${fmtMoney(p.discounted_price || 0)}</span>
+      ${p.club_discounted_price && p.club_discounted_price !== p.discounted_price ? `<span>С WB Кошельком: ${fmtMoney(p.club_discounted_price)}</span>` : ''}
+    </div>
+    <div class="price-profit-row">
+      <span class="pp-label">Прибыль (грубо)</span>
+      <span class="pp-value ${p.rough_margin !== null && p.rough_margin < 0 ? 'neg' : 'pos'}">${p.rough_margin !== null ? fmtMoney(p.rough_margin) : '—'}</span>
+    </div>
+    <div class="cogs-row">
+      <label>Закупка/шт.</label>
+      <input type="number" class="cogs-input" value="${p.cogs_unit || ''}" placeholder="0">
+      <button class="cogs-save">Сохранить</button>
+    </div>
+  </div>`;
 }
 
 function computePriceRow(price, cogs, commissionPct, logisticsEstimate) {

@@ -11,6 +11,7 @@ FINANCE_BASE = "https://finance-api.wildberries.ru"
 ADVERT_BASE = "https://advert-api.wildberries.ru"
 STATS_BASE = "https://statistics-api.wildberries.ru"
 COMMON_BASE = "https://common-api.wildberries.ru"
+PRICES_BASE = "https://discounts-prices-api.wildberries.ru"
 
 # The finance-reports endpoints share a strict 1 request/minute limit, per account.
 _FINANCE_MIN_INTERVAL = 61
@@ -160,6 +161,27 @@ class WBClient:
             m["cpc"] = round(m["sum"] / m["clicks"], 2) if m["clicks"] else 0
             m["cr"] = round(m["orders"] / m["clicks"] * 100, 2) if m["clicks"] else 0
         return list(merged.values())
+
+    def get_all_goods_prices(self):
+        """Paginates GET /api/v2/list/goods/filter — current price/discount
+        per nmID. Read-only: the "Цены и скидки" API key category (needed to
+        also write prices) is a different, separate scope this app doesn't
+        request during onboarding yet."""
+        items = []
+        offset = 0
+        limit = 1000
+        while True:
+            r = requests.get(
+                f"{PRICES_BASE}/api/v2/list/goods/filter",
+                headers=self.headers, params={"limit": limit, "offset": offset}, timeout=30,
+            )
+            r.raise_for_status()
+            batch = r.json().get("data", {}).get("listGoods", [])
+            items.extend(batch)
+            if len(batch) < limit:
+                break
+            offset += limit
+        return items
 
     def get_campaign_details(self, advert_ids):
         results = []
