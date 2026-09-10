@@ -17,6 +17,7 @@ from . import ozon_margin
 from . import ozon_price_monitor
 from . import ozon_prices
 from . import ozon_pricing
+from . import ozon_promo_guard
 from . import ozon_promotions
 from .db import init_db
 from .ozon_client import OzonClient
@@ -36,33 +37,54 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 async def _check_one_cabinet(cabinet: dict, bot, semaphore: "asyncio.Semaphore"):
     async with semaphore:
         try:
-            # check_cabinet makes blocking HTTP calls to Ozon — run it off the
-            # event loop so one slow/hanging cabinet can't stall the bot or API
-            # for everyone else (matters once this scales past a handful of cabinets).
+            # Both make blocking HTTP calls to Ozon — run off the event loop
+            # so one slow/hanging cabinet can't stall the bot or API for
+            # everyone else (matters once this scales past a handful of cabinets).
             new_negative = await asyncio.to_thread(ozon_price_monitor.check_cabinet, cabinet)
         except Exception:
+            new_negative = []
             log.exception(f"Price check failed for cabinet {cabinet['id']}")
-            return
-    if not new_negative:
-        return
-    lines = [f"• {n['name']} ({n['offer_id']}): {n['profit']} ₽" for n in new_negative]
-    text = (
-        f"⚠️ В кабинете «{cabinet['display_name'] or cabinet['id']}» "
-        f"{len(new_negative)} товар(ов) стали убыточными:\n\n" + "\n".join(lines)
-    )
-    try:
-        await bot.send_message(cabinet["telegram_user_id"], text)
-    except Exception:
-        log.exception(f"Failed to notify user for cabinet {cabinet['id']}")
+        try:
+            removed_from_promo = await asyncio.to_thread(ozon_promo_guard.check_and_clean_cabinet, cabinet)
+        except Exception:
+            removed_from_promo = []
+            log.exception(f"Promo guard failed for cabinet {cabinet['id']}")
+
+    if new_negative:
+        lines = [f"• {n['name']} ({n['offer_id']}): {n['profit']} ₽" for n in new_negative]
+        text = (
+            f"⚠️ В кабинете «{cabinet['display_name'] or cabinet['id']}» "
+            f"{len(new_negative)} товар(ов) стали убыточными:\n\n" + "\n".join(lines)
+        )
+        try:
+            await bot.send_message(cabinet["telegram_user_id"], text)
+        except Exception:
+            log.exception(f"Failed to notify user for cabinet {cabinet['id']}")
+
+    if removed_from_promo:
+        lines = [
+            f"• {r['title']} ({r['offer_id']}) — акция «{r['action_title']}», цена по акции {r['action_price']} ₽, прибыль была бы {r['profit']} ₽"
+            for r in removed_from_promo
+        ]
+        text = (
+            f"🚫 В кабинете «{cabinet['display_name'] or cabinet['id']}» автоматически убрано "
+            f"из невыгодных акций {len(removed_from_promo)} товар(ов):\n\n" + "\n".join(lines)
+        )
+        try:
+            await bot.send_message(cabinet["telegram_user_id"], text)
+        except Exception:
+            log.exception(f"Failed to notify user for cabinet {cabinet['id']}")
 
 
 async def _run_price_checks(bot):
-    """Runs every 10 minutes: checks all active Ozon cabinets' prices and
-    notifies each owner about products that newly became loss-making since
-    the last check (ozon_price_monitor keeps a per-cabinet snapshot so
-    already-known problem items aren't re-reported every cycle). Cabinets are
-    checked concurrently (capped at 5 in flight) instead of one at a time so
-    the total run time doesn't grow linearly with the number of cabinets."""
+    """Runs every 10 minutes for every active Ozon cabinet: (1) notifies the
+    owner about products that newly became loss-making (ozon_price_monitor
+    keeps a per-cabinet snapshot so already-known problems aren't re-reported
+    every cycle), and (2) automatically removes products from a promotion
+    when Ozon's own auto-add put them in at a losing price, notifying what
+    was removed and why. Cabinets are checked concurrently (capped at 5 in
+    flight) instead of one at a time so the total run time doesn't grow
+    linearly with the number of cabinets."""
     cabs = cabinets.list_all_active_cabinets(marketplace="ozon")
     semaphore = asyncio.Semaphore(5)
     await asyncio.gather(*[_check_one_cabinet(c, bot, semaphore) for c in cabs])

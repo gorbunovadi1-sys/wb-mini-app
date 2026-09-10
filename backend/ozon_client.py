@@ -145,6 +145,14 @@ class OzonClient:
                 break
         return products
 
+    def deactivate_products_from_action(self, action_id, product_ids):
+        """POST /v1/actions/products/deactivate — removes products from a
+        promotion. Returns the ids Ozon actually removed (it can reject some)."""
+        data = self._post("/v1/actions/products/deactivate", {
+            "action_id": action_id, "product_ids": product_ids,
+        })
+        return data.get("result", {}).get("product_ids", [])
+
     def get_fbs_postings(self, date_from, date_to):
         """Paginates /v3/posting/fbs/list for [date_from, date_to) (ISO datetimes),
         with financial_data (per-product commission_amount/payout — actual, not estimated)."""
