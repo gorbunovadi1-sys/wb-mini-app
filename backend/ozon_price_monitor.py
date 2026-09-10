@@ -27,31 +27,36 @@ def _save(path, data):
         json.dump(data, f, ensure_ascii=False)
 
 
-def _current_profit(p):
+def _current_profit_and_margin(p):
     price = p.get("price") or p.get("min_price") or 0
     cogs = p.get("cogs_unit") or 0
     expense = price * ((p.get("commission_pct") or 0) / 100) + (p.get("logistics_estimate") or 0)
-    return price - cogs - expense
+    profit = price - cogs - expense
+    margin_pct = (profit / price * 100) if price else 0
+    return profit, margin_pct
 
 
 def check_cabinet(cabinet: dict) -> list:
     """Computes current profit-per-unit for every product in this Ozon
-    cabinet (same formula as the Цены tab) and diffs the set of loss-making
-    offer_ids against the last check. Returns only the NEWLY negative ones —
-    products already known to be losing money aren't re-reported every run."""
+    cabinet (same formula as the Цены tab) and diffs the set of "below the
+    cabinet's minimum margin" offer_ids against the last check. Returns only
+    the NEWLY-below-threshold ones — products already known to be under it
+    aren't re-reported every run. Threshold defaults to 0% (i.e. any loss),
+    but is configurable per cabinet via settings.min_margin_pct."""
     creds = cabinet["credentials"]
     client = OzonClient(creds["client_id"], creds["api_key"])
     items = ozon_pricing.get_pricing_list(client, cabinet["id"])
+    min_margin_pct = cabinet.get("settings", {}).get("min_margin_pct", 0)
 
-    negative = []
+    below_threshold = []
     for p in items:
-        profit = _current_profit(p)
-        if profit < 0:
-            negative.append({"offer_id": p["offer_id"], "name": p["name"], "profit": round(profit, 2)})
+        profit, margin_pct = _current_profit_and_margin(p)
+        if margin_pct < min_margin_pct:
+            below_threshold.append({"offer_id": p["offer_id"], "name": p["name"], "profit": round(profit, 2), "margin_percent": round(margin_pct, 2)})
 
     state_file = _state_file(cabinet["id"])
     previous_ids = set(_load(state_file))
-    current_ids = {n["offer_id"] for n in negative}
+    current_ids = {n["offer_id"] for n in below_threshold}
     _save(state_file, list(current_ids))
 
-    return [n for n in negative if n["offer_id"] not in previous_ids]
+    return [n for n in below_threshold if n["offer_id"] not in previous_ids]

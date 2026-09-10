@@ -40,46 +40,71 @@ app = FastAPI(title="ИИ Движок API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
+async def _notify(bot, cabinet: dict, text: str):
+    try:
+        await bot.send_message(cabinet["telegram_user_id"], text)
+    except Exception:
+        log.exception(f"Failed to notify user for cabinet {cabinet['id']}")
+
+
 async def _check_one_cabinet(cabinet: dict, bot, semaphore: "asyncio.Semaphore"):
+    settings = cabinet.get("settings", {})
     async with semaphore:
         try:
-            # Both make blocking HTTP calls to Ozon — run off the event loop
+            # All make blocking HTTP calls to Ozon — run off the event loop
             # so one slow/hanging cabinet can't stall the bot or API for
             # everyone else (matters once this scales past a handful of cabinets).
-            new_negative = await asyncio.to_thread(ozon_price_monitor.check_cabinet, cabinet)
+            new_below_margin = await asyncio.to_thread(ozon_price_monitor.check_cabinet, cabinet)
         except Exception:
-            new_negative = []
+            new_below_margin = []
             log.exception(f"Price check failed for cabinet {cabinet['id']}")
         try:
-            removed_from_promo = await asyncio.to_thread(ozon_promo_guard.check_and_clean_cabinet, cabinet)
+            promo_result = await asyncio.to_thread(ozon_promo_guard.check_and_clean_cabinet, cabinet)
         except Exception:
-            removed_from_promo = []
+            promo_result = {"removed": [], "joined": []}
             log.exception(f"Promo guard failed for cabinet {cabinet['id']}")
+        dimension_events = []
+        if settings.get("notify_dimension_changes", True):
+            try:
+                creds = cabinet["credentials"]
+                dim_client = OzonClient(creds["client_id"], creds["api_key"])
+                dim_result = await asyncio.to_thread(ozon_dimensions.refresh_dimensions, client=dim_client, cabinet_id=str(cabinet["id"]))
+                dimension_events = [e for e in dim_result.get("recent_events", []) if e["at"] == dim_result["generated_at"]]
+            except Exception:
+                log.exception(f"Dimension check failed for cabinet {cabinet['id']}")
 
-    if new_negative:
-        lines = [f"• {n['name']} ({n['offer_id']}): {n['profit']} ₽" for n in new_negative]
-        text = (
-            f"⚠️ В кабинете «{cabinet['display_name'] or cabinet['id']}» "
-            f"{len(new_negative)} товар(ов) стали убыточными:\n\n" + "\n".join(lines)
-        )
-        try:
-            await bot.send_message(cabinet["telegram_user_id"], text)
-        except Exception:
-            log.exception(f"Failed to notify user for cabinet {cabinet['id']}")
+    name = cabinet["display_name"] or cabinet["id"]
+    min_margin_pct = settings.get("min_margin_pct", 0)
 
-    if removed_from_promo:
+    if new_below_margin:
+        lines = [f"• {n['name']} ({n['offer_id']}): {n['profit']} ₽, маржа {n['margin_percent']}%" for n in new_below_margin]
+        threshold_note = "стали убыточными" if min_margin_pct <= 0 else f"опустились ниже заданной маржи ({min_margin_pct}%)"
+        text = f"⚠️ В кабинете «{name}» {len(new_below_margin)} товар(ов) {threshold_note}:\n\n" + "\n".join(lines)
+        await _notify(bot, cabinet, text)
+
+    if promo_result["removed"]:
         lines = [
-            f"• {r['title']} ({r['offer_id']}) — акция «{r['action_title']}», цена по акции {r['action_price']} ₽, прибыль была бы {r['profit']} ₽"
-            for r in removed_from_promo
+            f"• {r['title']} ({r['offer_id']}) — акция «{r['action_title']}», цена по акции {r['action_price']} ₽, маржа была бы {r['margin_percent']}%"
+            for r in promo_result["removed"]
         ]
         text = (
-            f"🚫 В кабинете «{cabinet['display_name'] or cabinet['id']}» автоматически убрано "
-            f"из невыгодных акций {len(removed_from_promo)} товар(ов):\n\n" + "\n".join(lines)
+            f"🚫 В кабинете «{name}» автоматически убрано "
+            f"из невыгодных акций {len(promo_result['removed'])} товар(ов):\n\n" + "\n".join(lines)
         )
-        try:
-            await bot.send_message(cabinet["telegram_user_id"], text)
-        except Exception:
-            log.exception(f"Failed to notify user for cabinet {cabinet['id']}")
+        await _notify(bot, cabinet, text)
+
+    if promo_result["joined"]:
+        lines = [f"• {e['title']} ({e['offer_id']}) — акция «{e['action_title']}»" for e in promo_result["joined"]]
+        text = (
+            f"🏷 В кабинете «{name}» Ozon добавил в акции {len(promo_result['joined'])} товар(ов) "
+            f"(автовывод выключен, проверь сама):\n\n" + "\n".join(lines)
+        )
+        await _notify(bot, cabinet, text)
+
+    if dimension_events:
+        lines = [f"• {e['title']} ({e['offer_id']}): {e['field_label']} {e['old_value']} → {e['new_value']} {e['unit']}" for e in dimension_events]
+        text = f"📐 В кабинете «{name}» изменились габариты/вес у {len(dimension_events)} товар(ов):\n\n" + "\n".join(lines)
+        await _notify(bot, cabinet, text)
 
 
 async def _run_price_checks(bot):

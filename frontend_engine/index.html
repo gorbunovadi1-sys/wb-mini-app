@@ -241,6 +241,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
     <button data-view="stock">Остатки</button>
     <button data-view="actions">Акции</button>
     <button data-view="ads">Реклама</button>
+    <button data-view="settings">Настройки</button>
   </nav>
 </aside>
 
@@ -325,7 +326,7 @@ let pricingItems = null;
 let pendingPriceChanges = {}; // offer_id -> price
 let stockItems = null;
 
-const VIEW_TITLES = { dashboard: 'Дашборд', analytics: 'Аналитика', detail: 'Детализация', pricing: 'Цены', stock: 'Остатки', actions: 'Акции', ads: 'Реклама' };
+const VIEW_TITLES = { dashboard: 'Дашборд', analytics: 'Аналитика', detail: 'Детализация', pricing: 'Цены', stock: 'Остатки', actions: 'Акции', ads: 'Реклама', settings: 'Настройки' };
 
 async function boot() {
   try {
@@ -432,6 +433,7 @@ function loadView() {
   if (activeView === 'stock') return loadStock();
   if (activeView === 'actions') return loadActions();
   if (activeView === 'ads') return loadAds();
+  if (activeView === 'settings') return loadSettings();
 }
 
 // ==================== Dashboard ====================
@@ -1315,7 +1317,6 @@ function wbStockCardHtml(p) {
 // ==================== Акции ====================
 
 let actionsList = null;
-let cabinetSettings = null;
 let activeActionId = null;
 
 async function loadActions() {
@@ -1328,13 +1329,9 @@ async function loadActions() {
   const reqView = activeView, reqCabinet = activeCabinetId;
   el.innerHTML = '<div class="state-msg">Загрузка акций…</div>';
   try {
-    const [actionsResp, settings] = await Promise.all([
-      apiFetch(`/api/cabinets/${activeCabinetId}/ozon/actions`),
-      apiFetch(`/api/cabinets/${activeCabinetId}/settings`),
-    ]);
+    const actionsResp = await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/actions`);
     if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
     actionsList = actionsResp.actions;
-    cabinetSettings = settings;
     renderActionsList();
   } catch (e) {
     if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
@@ -1345,37 +1342,11 @@ async function loadActions() {
 function renderActionsList() {
   const el = document.getElementById('content');
   const sorted = [...actionsList].sort((a, b) => b.participating_products_count - a.participating_products_count);
-  const autoRemove = cabinetSettings.promo_auto_remove !== false;
   el.innerHTML = `
-    <div class="card">
-      <div class="toggle-row">
-        <div>
-          <div class="toggle-label">Автоматически убирать невыгодные товары</div>
-          <div class="toggle-sub">Проверяется каждые 10 минут вместе с мониторингом цен</div>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="autoRemoveToggle" ${autoRemove ? 'checked' : ''}>
-          <span class="switch-slider"></span>
-        </label>
-      </div>
-    </div>
+    <div class="notice" style="margin-bottom:2px">Правила автовывода из невыгодных акций — во вкладке «Настройки».</div>
     <input class="search-box" id="actionsSearch" placeholder="Поиск по акции…">
     <div class="product-list" id="actionsListEl"></div>
   `;
-  document.getElementById('autoRemoveToggle').addEventListener('change', async (e) => {
-    const val = e.target.checked;
-    try {
-      cabinetSettings = await apiFetch(`/api/cabinets/${activeCabinetId}/settings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ promo_auto_remove: val }),
-      });
-    } catch (err) {
-      alert('Не удалось сохранить настройку: ' + err.message);
-      e.target.checked = !val;
-    }
-  });
-
   const searchEl = document.getElementById('actionsSearch');
   const renderList = () => {
     const q = searchEl.value.trim().toLowerCase();
@@ -1653,6 +1624,115 @@ function adCardHtml(c) {
       <span>CTR: ${c.ctr}% · CPC: ${fmtMoney(c.cpc)}</span>
     </div>
   </div>`;
+}
+
+// ==================== Настройки ====================
+
+let cabinetSettingsData = null;
+
+async function loadSettings() {
+  const el = document.getElementById('content');
+  const cabinet = activeCabinet();
+  if (!cabinet || cabinet.marketplace !== 'ozon') {
+    el.innerHTML = '<div class="state-msg">Настройки мониторинга пока доступны только для кабинетов Ozon.</div>';
+    return;
+  }
+  const reqView = activeView, reqCabinet = activeCabinetId;
+  el.innerHTML = '<div class="state-msg">Загрузка настроек…</div>';
+  try {
+    cabinetSettingsData = await apiFetch(`/api/cabinets/${activeCabinetId}/settings`);
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
+    renderSettings();
+  } catch (e) {
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить настройки.<br>${e.message}</div>`;
+  }
+}
+
+async function saveSetting(patch, onFail) {
+  try {
+    cabinetSettingsData = await apiFetch(`/api/cabinets/${activeCabinetId}/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    return true;
+  } catch (e) {
+    alert('Не удалось сохранить: ' + e.message);
+    if (onFail) onFail();
+    return false;
+  }
+}
+
+function renderSettings() {
+  const el = document.getElementById('content');
+  const s = cabinetSettingsData || {};
+  const autoRemove = s.promo_auto_remove !== false;
+  const notifyDims = s.notify_dimension_changes !== false;
+  const minMargin = s.min_margin_pct !== undefined ? s.min_margin_pct : 0;
+
+  el.innerHTML = `
+    <div class="card">
+      <h3>Минимальная маржа</h3>
+      <div class="notice" style="margin-bottom:10px">Товары с маржой ниже этого значения считаются «невыгодными» — на них реагируют мониторинг цен и автовывод из акций.</div>
+      <div class="price-fields">
+        <div class="price-field">
+          <label>Минимальная маржа, %</label>
+          <input type="number" id="minMarginInput" value="${minMargin}" step="1">
+        </div>
+      </div>
+      <div class="price-save-row"><button class="price-save-btn" id="minMarginSave">Сохранить</button></div>
+    </div>
+
+    <div class="card">
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Автоматически убирать невыгодные товары из акций</div>
+          <div class="toggle-sub">Проверяется каждые 10 минут. Если выключено — акции не трогаем, но пришлём уведомление, когда Ozon сам добавит туда товары.</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="autoRemoveToggle" ${autoRemove ? 'checked' : ''}>
+          <span class="switch-slider"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Уведомлять об изменении габаритов и веса</div>
+          <div class="toggle-sub">Ozon иногда сам меняет данные в карточке товара — это влияет на логистические тарифы.</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="notifyDimsToggle" ${notifyDims ? 'checked' : ''}>
+          <span class="switch-slider"></span>
+        </label>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('minMarginSave').addEventListener('click', async () => {
+    const btn = document.getElementById('minMarginSave');
+    const value = parseFloat(document.getElementById('minMarginInput').value);
+    if (isNaN(value)) { alert('Укажи число'); return; }
+    btn.disabled = true; btn.textContent = 'Сохранение…';
+    const ok = await saveSetting({ min_margin_pct: value });
+    btn.disabled = false;
+    btn.textContent = ok ? 'Сохранено ✓' : 'Сохранить';
+    if (ok) setTimeout(() => { btn.textContent = 'Сохранить'; }, 1500);
+  });
+
+  document.getElementById('autoRemoveToggle').addEventListener('change', async (e) => {
+    const val = e.target.checked;
+    const ok = await saveSetting({ promo_auto_remove: val });
+    if (!ok) e.target.checked = !val;
+  });
+
+  document.getElementById('notifyDimsToggle').addEventListener('change', async (e) => {
+    const val = e.target.checked;
+    const ok = await saveSetting({ notify_dimension_changes: val });
+    if (!ok) e.target.checked = !val;
+  });
 }
 
 document.addEventListener('click', async (e) => {
