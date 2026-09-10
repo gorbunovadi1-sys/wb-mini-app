@@ -482,8 +482,11 @@ function renderDashboard(data, cabinet) {
   const kpis = isOzon ? [
     { label: 'Себестоимость', value: fmtMoney(acc.cogs_total || 0), sub: 'закупка выкупленных товаров' },
     { label: 'Комиссия', value: fmtMoney(acc.commission || 0), sub: 'комиссия Ozon с продаж' },
+    { label: 'Доставка', value: fmtMoney(acc.delivery || 0), sub: 'логистика по реальным начислениям' },
+    { label: 'Сборы по товарам', value: fmtMoney(acc.item_fees || 0), sub: 'мелкие сборы за штуку' },
     { label: 'Прочие сборы', value: fmtMoney(acc.other_fees || 0), sub: 'эквайринг, упаковка, хранение...' },
-    { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit, sub: 'выкуплено минус все расходы и себестоимость' },
+    ...(acc.tax_pct ? [{ label: 'Налог', value: fmtMoney(acc.tax || 0), sub: `${acc.tax_pct}% с цены продажи` }] : []),
+    { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit, sub: 'выкуплено минус все расходы, налог и себестоимость' },
     { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent, sub: 'прибыль ÷ выкуплено' },
   ] : [
     { label: 'Выручка', value: fmtMoney(acc.revenue), cmp: cmp.revenue },
@@ -882,7 +885,7 @@ async function loadPricing() {
       pricingItems = data.items;
       pricingItems.forEach(p => {
         const price = p.price || p.min_price || 0;
-        p.currentProfit = computePriceRow(price, p.cogs_unit || 0, p.commission_pct, p.logistics_estimate).profit;
+        p.currentProfit = computePriceRow(price, p.cogs_unit || 0, p.commission_pct, p.logistics_estimate, p.tax_pct).profit;
       });
     }
     renderPricing(pricingItems);
@@ -956,15 +959,16 @@ function wbPriceCardHtml(p) {
   </div>`;
 }
 
-function computePriceRow(price, cogs, commissionPct, logisticsEstimate) {
+function computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct) {
   const expensePerUnit = price * (commissionPct / 100) + logisticsEstimate;
-  const profit = price - cogs - expensePerUnit;
-  return { expensePerUnit, profit };
+  const tax = price * ((taxPct || 0) / 100);
+  const profit = price - cogs - expensePerUnit - tax;
+  return { expensePerUnit, tax, profit };
 }
 
-function suggestPrice(cogs, commissionPct, logisticsEstimate, targetMarginPct) {
-  // price - cogs - price*commissionPct/100 - logistics = price*targetMarginPct/100
-  const denom = 1 - commissionPct / 100 - targetMarginPct / 100;
+function suggestPrice(cogs, commissionPct, logisticsEstimate, targetMarginPct, taxPct) {
+  // price - cogs - price*commissionPct/100 - logistics - price*taxPct/100 = price*targetMarginPct/100
+  const denom = 1 - commissionPct / 100 - (taxPct || 0) / 100 - targetMarginPct / 100;
   if (denom <= 0) return null;
   return (cogs + logisticsEstimate) / denom;
 }
@@ -1013,7 +1017,7 @@ function renderPricing(items) {
 function priceCardHtml(p) {
   const staged = pendingPriceChanges[p.offer_id] !== undefined;
   return `<div class="price-card ${staged ? 'staged' : ''}" data-offer="${p.offer_id}"
-      data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-old-price="${p.old_price || 0}">
+      data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-tax="${p.tax_pct || 0}" data-old-price="${p.old_price || 0}">
     <div class="p-name">${p.name}</div>
     <div class="p-offer copy-chip" data-copy="${p.offer_id}">${p.offer_id}</div>
     <div class="price-fields">
@@ -1047,6 +1051,7 @@ function bindPriceCard(card) {
   const offerId = card.dataset.offer;
   const commissionPct = parseFloat(card.dataset.commission) || 0;
   const logisticsEstimate = parseFloat(card.dataset.logistics) || 0;
+  const taxPct = parseFloat(card.dataset.tax) || 0;
   const oldPriceOriginal = parseFloat(card.dataset.oldPrice) || 0;
   const priceInput = card.querySelector('.price-input');
   const cogsInput = card.querySelector('.cogs-price-input');
@@ -1058,16 +1063,16 @@ function bindPriceCard(card) {
   function recalc() {
     const price = parseFloat(priceInput.value) || 0;
     const cogs = parseFloat(cogsInput.value) || 0;
-    const { expensePerUnit, profit } = computePriceRow(price, cogs, commissionPct, logisticsEstimate);
-    expenseOut.textContent = `расход/шт. ${fmtMoney(expensePerUnit)}`;
+    const { expensePerUnit, tax, profit } = computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct);
+    expenseOut.textContent = `расход/шт. ${fmtMoney(expensePerUnit)}${tax ? ` + налог ${fmtMoney(tax)}` : ''}`;
     profitOut.textContent = fmtMoney(profit);
     profitOut.classList.toggle('neg', profit < 0);
     profitOut.classList.toggle('pos', profit >= 0);
 
     if (profit < 0) {
-      const suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 15);
+      const suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 15, taxPct);
       if (suggested && suggested > price) {
-        const { profit: newProfit } = computePriceRow(suggested, cogs, commissionPct, logisticsEstimate);
+        const { profit: newProfit } = computePriceRow(suggested, cogs, commissionPct, logisticsEstimate, taxPct);
         suggestOut.innerHTML = `Чтобы выйти в плюс: цена от <b>${fmtMoney(suggested)}</b> (прибыль ${fmtMoney(newProfit)})`;
       } else {
         suggestOut.textContent = '';
@@ -1452,7 +1457,7 @@ function candidateCardHtml(p) {
   // profit. Treat it as unknown instead, and don't offer to add it blind.
   const hasInfo = !!p.offer_id;
   return `<div class="price-card" data-pid="${p.product_id}" data-has-info="${hasInfo ? '1' : '0'}"
-      data-cogs="${p.cogs_unit}" data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}">
+      data-cogs="${p.cogs_unit}" data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-tax="${p.tax_pct || 0}">
     <div class="p-name">${p.name}</div>
     <div class="p-offer copy-chip" data-copy="${p.offer_id || p.product_id}">${p.offer_id || p.product_id}</div>
     <div class="price-fields">
@@ -1480,7 +1485,8 @@ function recalcCandProfit(card) {
   const cogs = parseFloat(card.dataset.cogs) || 0;
   const commission = parseFloat(card.dataset.commission) || 0;
   const logistics = parseFloat(card.dataset.logistics) || 0;
-  const profit = price - cogs - (price * (commission / 100) + logistics);
+  const tax = parseFloat(card.dataset.tax) || 0;
+  const profit = price - cogs - (price * (commission / 100) + logistics) - price * (tax / 100);
   out.textContent = fmtMoney(profit);
   out.classList.toggle('neg', profit < 0);
   out.classList.toggle('pos', profit >= 0);
@@ -1670,6 +1676,7 @@ function renderSettings() {
   const autoRemove = s.promo_auto_remove !== false;
   const notifyDims = s.notify_dimension_changes !== false;
   const minMargin = s.min_margin_pct !== undefined ? s.min_margin_pct : 0;
+  const taxPct = s.tax_pct !== undefined ? s.tax_pct : 0;
 
   el.innerHTML = `
     <div class="card">
@@ -1682,6 +1689,18 @@ function renderSettings() {
         </div>
       </div>
       <div class="price-save-row"><button class="price-save-btn" id="minMarginSave">Сохранить</button></div>
+    </div>
+
+    <div class="card">
+      <h3>Налог</h3>
+      <div class="notice" style="margin-bottom:10px">Считается от цены продажи (не от суммы, которую перечисляет Ozon) и вычитается при расчёте прибыли — в «Ценах», «Детализации» и в акциях.</div>
+      <div class="price-fields">
+        <div class="price-field">
+          <label>Налог, % от цены продажи</label>
+          <input type="number" id="taxPctInput" value="${taxPct}" step="0.1">
+        </div>
+      </div>
+      <div class="price-save-row"><button class="price-save-btn" id="taxPctSave">Сохранить</button></div>
     </div>
 
     <div class="card">
@@ -1717,6 +1736,17 @@ function renderSettings() {
     if (isNaN(value)) { alert('Укажи число'); return; }
     btn.disabled = true; btn.textContent = 'Сохранение…';
     const ok = await saveSetting({ min_margin_pct: value });
+    btn.disabled = false;
+    btn.textContent = ok ? 'Сохранено ✓' : 'Сохранить';
+    if (ok) setTimeout(() => { btn.textContent = 'Сохранить'; }, 1500);
+  });
+
+  document.getElementById('taxPctSave').addEventListener('click', async () => {
+    const btn = document.getElementById('taxPctSave');
+    const value = parseFloat(document.getElementById('taxPctInput').value);
+    if (isNaN(value)) { alert('Укажи число'); return; }
+    btn.disabled = true; btn.textContent = 'Сохранение…';
+    const ok = await saveSetting({ tax_pct: value });
     btn.disabled = false;
     btn.textContent = ok ? 'Сохранено ✓' : 'Сохранить';
     if (ok) setTimeout(() => { btn.textContent = 'Сохранить'; }, 1500);

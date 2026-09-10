@@ -11,6 +11,7 @@ def get_pricing_list(client, cabinet_id: int) -> list:
     names = {a.get("offer_id"): a.get("name", "") for a in attrs}
     cost_prices = cabinets.get_cost_prices(cabinet_id)
     stocks = client.get_all_stocks()
+    tax_pct = cabinets.get_cabinet_settings(cabinet_id).get("tax_pct", 0)
 
     items = []
     for p in prices:
@@ -37,6 +38,7 @@ def get_pricing_list(client, cabinet_id: int) -> list:
             "cogs_unit": cost_prices.get(offer_id, 0),
             "commission_pct": sales_pct,
             "logistics_estimate": logistics_estimate,
+            "tax_pct": tax_pct,
             "fbo_stock": stock["fbo"],
             "fbs_stock": stock["fbs"],
         })

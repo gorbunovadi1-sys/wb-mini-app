@@ -292,8 +292,9 @@ def get_cabinet_margin(
                 client=client, cost_prices=cost_prices, days=days, date_from=date_from, date_to=date_to,
                 rows=rows, rows_cover_from=rows_cover_from,
             )
+        tax_pct = cabinet.get("settings", {}).get("tax_pct", 0)
         return ozon_margin.build_margin_summary(
-            client=client, cost_prices=cost_prices, days=days, date_from=date_from, date_to=date_to,
+            client=client, cost_prices=cost_prices, days=days, date_from=date_from, date_to=date_to, tax_pct=tax_pct,
         )
     except Exception as e:
         log.exception(f"Failed to build margin for cabinet {cabinet_id}")

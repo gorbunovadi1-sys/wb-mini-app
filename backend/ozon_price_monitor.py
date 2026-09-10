@@ -31,7 +31,8 @@ def _current_profit_and_margin(p):
     price = p.get("price") or p.get("min_price") or 0
     cogs = p.get("cogs_unit") or 0
     expense = price * ((p.get("commission_pct") or 0) / 100) + (p.get("logistics_estimate") or 0)
-    profit = price - cogs - expense
+    tax = price * ((p.get("tax_pct") or 0) / 100)
+    profit = price - cogs - expense - tax
     margin_pct = (profit / price * 100) if price else 0
     return profit, margin_pct
 
