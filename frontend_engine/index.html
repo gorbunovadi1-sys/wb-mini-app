@@ -308,6 +308,11 @@ function fmtMoney(v) {
   return sign + Math.round(Math.abs(v)).toLocaleString('ru-RU') + ' ₽';
 }
 function fmtNum(v) { return Math.round(v).toLocaleString('ru-RU'); }
+function rateSourceBadge(source) {
+  if (source === 'real') return '<div class="price-suggest" style="opacity:.75">комиссия/логистика — по фактическим продажам</div>';
+  if (source === 'estimate') return '<div class="price-suggest" style="opacity:.75">комиссия/логистика — оценка (ещё не продавался), уточнится после первых продаж</div>';
+  return '';
+}
 function isoDate(d) { return d.toISOString().slice(0, 10); }
 
 function deltaHtml(cmp) {
@@ -1073,6 +1078,7 @@ function priceCardHtml(p) {
       <span>Остаток FBO: ${fmtNum(p.fbo_stock || 0)}</span>
       <span>FBS: ${fmtNum(p.fbs_stock || 0)}</span>
     </div>
+    ${rateSourceBadge(p.rate_source)}
     <div class="price-profit-row">
       <span class="pp-label">Прибыль со штуки</span>
       <span class="pp-value profit-out">—</span>
@@ -1560,6 +1566,7 @@ function inActionCardHtml(p) {
       <span class="pp-label">Прибыль по акции</span>
       <span class="pp-value ${profitKnown ? (neg ? 'neg' : 'pos') : ''}">${profitKnown ? fmtMoney(p.profit) : 'нет данных'}</span>
     </div>
+    ${profitKnown ? rateSourceBadge(p.rate_source) : ''}
     ${missingCogs ? `<div class="cogs-row">
       <label>Закупка/шт.</label>
       <input type="number" class="cogs-input" value="" placeholder="0">
@@ -1600,6 +1607,7 @@ function candidateCardHtml(p) {
       <span class="pp-label">Прибыль по этой цене</span>
       <span class="pp-value cand-profit-out">${canEvaluate ? '—' : 'нет данных'}</span>
     </div>
+    ${canEvaluate ? rateSourceBadge(p.rate_source) : ''}
     ${canEvaluate
       ? `<div class="price-save-row"><button class="price-save-btn action-add-btn" data-pid="${p.product_id}">Добавить в акцию</button></div>`
       : `<div class="price-suggest">${hasInfo ? 'Не указана себестоимость — заполни её выше, чтобы увидеть реальную прибыль.' : 'Нет данных о цене/комиссии для этого товара.'} Добавление отключено, пока прибыль не оценить.</div>`}

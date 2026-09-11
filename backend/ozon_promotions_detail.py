@@ -46,6 +46,7 @@ def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
         logistics_estimate = info.get("logistics_estimate", 0) if info else 0
         tax_pct = info.get("tax_pct", 0) if info else 0
         has_cost_price = offer_id in cost_prices
+        rate_source = info.get("rate_source", "estimate") if info else "estimate"
         return {
             "product_id": item["id"],
             "offer_id": offer_id,
@@ -59,6 +60,7 @@ def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
             "logistics_estimate": logistics_estimate,
             "tax_pct": tax_pct,
             "has_cost_price": has_cost_price,
+            "rate_source": rate_source,
             # None (not 0) when we couldn't match this product to our price/
             # commission data at all, OR when no cost price is on file for
             # it — a "profit" computed with cogs_unit silently defaulted to 0
