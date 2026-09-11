@@ -363,14 +363,26 @@ def debug_ozon_postings(cabinet_id: int, telegram_id: int, date_from: str, date_
                 total += float(fp.get(field) or 0) * (fp.get("quantity") or 0)
         return total
 
+    def sum_qty(statuses):
+        return sum(
+            prod.get("quantity") or 0
+            for p in in_range if p.get("status") in statuses
+            for prod in p.get("products", [])
+        )
+
     non_cancelled = {"delivered", "delivering", "awaiting_deliver", "awaiting_packaging", "acceptance_in_progress", "sent_by_seller"}
     delivered_only = {"delivered"}
+    all_statuses = set(status_counts.keys())
     return {
         "cache_cover_from": cover_from,
         "is_stale": is_stale,
         "total_cached_postings": len(postings),
         "postings_in_range": len(in_range),
         "status_counts": status_counts,
+        "qty_non_cancelled": sum_qty(non_cancelled),
+        "qty_delivered_only": sum_qty(delivered_only),
+        "qty_all_statuses_incl_cancelled": sum_qty(all_statuses),
+        "revenue_all_statuses_incl_cancelled__top_level_price": round(sum_top_level_price(all_statuses), 2),
         "non_cancelled__top_level_price": round(sum_top_level_price(non_cancelled), 2),
         "non_cancelled__financial_price": round(sum_financial_field("price", non_cancelled), 2),
         "non_cancelled__financial_customer_price": round(sum_financial_field("customer_price", non_cancelled), 2),
