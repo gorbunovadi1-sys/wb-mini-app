@@ -467,7 +467,10 @@ function renderDashboard(data, cabinet) {
   const isOzon = cabinet && cabinet.marketplace === 'ozon';
 
   const hasOrdersData = acc.orders_qty !== undefined;
-  const ordersBlock = hasOrdersData ? `
+  // For Ozon, orders/buyouts move into the main kpis sequence below (with
+  // everything else) so the whole flow — от заказа до чистой прибыли —
+  // reads top to bottom in one place. WB keeps the separate summary block.
+  const ordersBlock = (hasOrdersData && !isOzon) ? `
     <div class="kpi-grid">
       <div class="kpi-card">
         <div class="k">Заказы</div>
@@ -482,15 +485,24 @@ function renderDashboard(data, cabinet) {
     </div>
   ` : '';
 
+  // Порядок специально повторяет путь денег: от заказа — к тому, что реально
+  // осталось у тебя. Верхний блок (Заказы → Выкуплено) — что произошло с
+  // товаром. Средний (Налог → Прочие расходы) — что вычиталось по пути.
+  // «К перечислению» — граница между деньгами Ozon и твоими собственными
+  // расходами (себестоимость, налог) ниже неё.
   const kpis = isOzon ? [
-    { label: 'Себестоимость', value: fmtMoney(acc.cogs_total || 0), sub: 'закупка выкупленных товаров' },
-    { label: 'Комиссия', value: fmtMoney(acc.commission || 0), sub: 'комиссия Ozon с продаж' },
-    { label: 'Доставка', value: fmtMoney(acc.delivery || 0), sub: 'логистика по реальным начислениям' },
-    { label: 'Сборы по товарам', value: fmtMoney(acc.item_fees || 0), sub: 'мелкие сборы за штуку' },
-    { label: 'Прочие сборы', value: fmtMoney(acc.other_fees || 0), sub: 'эквайринг, упаковка, хранение...' },
-    ...(acc.tax_pct ? [{ label: 'Налог', value: fmtMoney(acc.tax || 0), sub: `${acc.tax_pct}% с цены продажи` }] : []),
-    { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit, sub: 'выкуплено минус все расходы, налог и себестоимость' },
-    { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent, sub: 'прибыль ÷ выкуплено' },
+    { label: 'Заказы', value: fmtMoney(acc.orders_revenue || 0), sub: `${fmtNum(acc.orders_qty || 0)} шт. · все заказы за период, кроме отменённых, по цене продажи — от неё считается комиссия Ozon` },
+    { label: 'Отменённые заказы', value: fmtMoney(acc.cancelled_revenue || 0), sub: `${fmtNum(acc.cancelled_qty || 0)} шт. · заказы, которые не стали продажей — в прибыль не входят` },
+    { label: 'Выкуплено', value: fmtMoney(acc.buyouts_revenue || 0), cmp: cmp.revenue, sub: `${fmtNum(acc.buyouts_qty || 0)} шт.${acc.buyout_rate !== null ? ` · ${acc.buyout_rate}% выкупа` : ''} · реально купленные товары — от них считается всё ниже` },
+    { label: 'Налог', value: fmtMoney(acc.tax || 0), sub: acc.tax_pct ? `${acc.tax_pct}% от цены выкупленных товаров — твой личный налог, не Ozon` : 'не указан % в Настройках — налог не учитывается' },
+    { label: 'Себестоимость', value: fmtMoney(acc.cogs_total || 0), sub: 'закупочная цена выкупленных товаров' },
+    { label: 'Логистика', value: fmtMoney(acc.delivery || 0), sub: 'доставка выкупленных товаров — по факту начислений Ozon, не оценка' },
+    { label: 'Комиссия', value: fmtMoney(acc.commission || 0), sub: 'комиссия Ozon с выкупленных товаров' },
+    { label: 'Сборы по товарам', value: fmtMoney(acc.item_fees || 0), sub: 'мелкие пооперационные сборы Ozon за штуку' },
+    { label: 'Прочие расходы площадки', value: fmtMoney(acc.other_fees || 0), sub: 'эквайринг, упаковка, хранение — не привязаны к одному товару' },
+    { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent, sub: 'чистая прибыль ÷ выкуплено' },
+    { label: 'К перечислению от Ozon', value: fmtMoney(acc.payout_real || 0), sub: 'выкуплено минус комиссия, логистика и сборы Ozon — сколько денег реально придёт от площадки' },
+    { label: 'Чистая прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit, sub: 'к перечислению минус твоя себестоимость и налог — то, что остаётся тебе' },
   ] : [
     { label: 'Выручка', value: fmtMoney(acc.revenue), cmp: cmp.revenue },
     { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit },

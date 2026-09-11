@@ -21,17 +21,24 @@ def _empty_bucket():
     return {"revenue": 0.0, "qty": 0}
 
 
-def _accumulate_postings(postings, per_offer_orders, per_offer_buyouts, daily, totals_orders, totals_buyouts, sku_to_offer):
-    """Splits FBS+FBO postings into 'orders' (all non-cancelled) and 'buyouts'
-    (status=delivered only), both per-offer and account-wide, plus a daily
-    orders series for the chart. Only revenue/qty come from here now — real
-    commission/delivery/fees come from accrual/by-day (see
+def _accumulate_postings(postings, per_offer_orders, per_offer_buyouts, daily, totals_orders, totals_buyouts, totals_cancelled, sku_to_offer):
+    """Splits FBS+FBO postings into 'orders' (all non-cancelled), 'buyouts'
+    (status=delivered only) and 'cancelled' (tracked separately so a
+    cancelled order's seller-price revenue is visible on its own, instead of
+    just vanishing), both per-offer (for orders/buyouts) and account-wide,
+    plus a daily orders series for the chart. Only revenue/qty come from
+    here now — real commission/delivery/fees come from accrual/by-day (see
     _fetch_accrual_breakdown), which financial_data.payout turned out to
     NOT include (verified live: payout was missing the delivery deduction
     entirely, silently overstating profit by the shipping cost)."""
     for posting in postings:
         status = posting.get("status")
         if status in EXCLUDED_STATUSES:
+            for prod in posting.get("products", []):
+                qty = prod.get("quantity") or 0
+                price = float(prod.get("price") or 0)
+                totals_cancelled["revenue"] += price * qty
+                totals_cancelled["qty"] += qty
             continue
         ts = posting.get("in_process_at") or posting.get("created_at") or ""
         date_str = ts[:10]
@@ -239,15 +246,16 @@ def build_margin_summary(
     daily = collections.defaultdict(lambda: {"revenue": 0.0, "qty": 0})
     totals_orders = _empty_bucket()
     totals_buyouts = _empty_bucket()
+    totals_cancelled = _empty_bucket()
     sku_to_offer = {}
-    _accumulate_postings(postings, per_offer_orders, per_offer_buyouts, daily, totals_orders, totals_buyouts, sku_to_offer)
+    _accumulate_postings(postings, per_offer_orders, per_offer_buyouts, daily, totals_orders, totals_buyouts, totals_cancelled, sku_to_offer)
 
     prev_totals_buyouts = _empty_bucket()
     _accumulate_postings(
         prev_postings,
         collections.defaultdict(_empty_bucket), collections.defaultdict(_empty_bucket),
         collections.defaultdict(lambda: {"revenue": 0.0, "qty": 0}),
-        _empty_bucket(), prev_totals_buyouts, {},
+        _empty_bucket(), prev_totals_buyouts, _empty_bucket(), {},
     )
 
     if use_cache:
@@ -313,7 +321,11 @@ def build_margin_summary(
     total_item_fees = sum(pr["item_fees"] for pr in products)
     total_cogs = sum(pr["cogs_total"] for pr in products)
     total_tax = sum(pr["tax"] for pr in products)
-    total_profit = total_revenue - total_commission - total_delivery - total_item_fees - other_fees_cost - total_cogs - total_tax
+    # "К перечислению" — what Ozon actually pays out for the buyouts, before
+    # the seller's OWN costs (cogs, tax) are taken out of that. Everything
+    # subtracted here is money Ozon itself keeps, not the seller's expense.
+    total_payout_real = total_revenue - total_commission - total_delivery - total_item_fees - other_fees_cost
+    total_profit = total_payout_real - total_cogs - total_tax
     total_margin_pct = (total_profit / total_revenue * 100) if total_revenue else 0.0
 
     prev_revenue = prev_totals_buyouts["revenue"]
@@ -343,6 +355,7 @@ def build_margin_summary(
             "cogs_total": round(total_cogs, 2),
             "tax": round(total_tax, 2),
             "tax_pct": tax_pct,
+            "payout_real": round(total_payout_real, 2),
             "profit": round(total_profit, 2),
             "margin_percent": round(total_margin_pct, 2),
             "cost_prices_known_for": sum(1 for pr in products if pr["has_cost_price"]),
@@ -350,6 +363,8 @@ def build_margin_summary(
             "qty_total": totals_buyouts["qty"],
             "orders_qty": totals_orders["qty"],
             "orders_revenue": round(totals_orders["revenue"], 2),
+            "cancelled_qty": totals_cancelled["qty"],
+            "cancelled_revenue": round(totals_cancelled["revenue"], 2),
             "buyouts_qty": totals_buyouts["qty"],
             "buyouts_revenue": round(totals_buyouts["revenue"], 2),
             "buyout_rate": buyout_rate,
