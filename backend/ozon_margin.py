@@ -95,7 +95,13 @@ def _fetch_accrual_for_day(client, date_str: str):
     delivery.total_accrued triple reconciles exactly to what Ozon actually
     paid out, verified live) plus per-SKU other item-level fees (ITEM
     category) and account-wide fees not tied to any one product (NON_ITEM).
-    Returns ({sku: {commission, delivery, item_fees}}, non_item_total)."""
+    Returns ({sku: {commission, delivery, item_fees}}, non_item_total). Keys
+    are always str(sku) — this dict gets cached through a Postgres JSON
+    column, which silently turns int keys into strings on the way back out,
+    so keeping them as ints here would make every cached lookup miss (which
+    is exactly what happened: commission/delivery/item_fees all silently
+    read as 0 for any cache-served period, since sku_to_offer's int keys
+    never matched this dict's post-round-trip string keys)."""
     per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0})
     non_item_total = 0.0
     try:
@@ -110,6 +116,7 @@ def _fetch_accrual_for_day(client, date_str: str):
                 sku = prod.get("sku")
                 if not sku:
                     continue
+                sku = str(sku)
                 commission = prod.get("commission") or {}
                 delivery = prod.get("delivery") or {}
                 per_sku[sku]["commission"] += _accrual_amount(commission, "commission", "amount")
@@ -119,6 +126,7 @@ def _fetch_accrual_for_day(client, date_str: str):
                 sku = fee_group.get("sku")
                 if not sku:
                     continue
+                sku = str(sku)
                 for fee in (fee_group.get("fees") or []):
                     per_sku[sku]["item_fees"] += _accrual_amount(fee, "accrued", "amount")
         elif cat == "NON_ITEM":
@@ -269,7 +277,7 @@ def build_margin_summary(
     # in the rare case Ozon assigns more than one, all are summed together).
     per_offer_accrual = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0})
     for sku, offer_id in sku_to_offer.items():
-        a = per_sku_accrual.get(sku)
+        a = per_sku_accrual.get(str(sku))
         if not a:
             continue
         oa = per_offer_accrual[offer_id]

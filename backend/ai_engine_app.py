@@ -326,58 +326,6 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
     raise ValueError(f"unknown marketplace {cabinet['marketplace']}")
 
 
-@app.get("/api/_debug/ozon-cache-check/{cabinet_id}")
-def debug_ozon_cache_check(cabinet_id: int, telegram_id: int, date_from: str, date_to: str):
-    """TEMPORARY — checking why commission/delivery/item_fees show 0 for a
-    recent narrow period despite real buyouts. Reads only from cache, no
-    live Ozon calls. Remove after use."""
-    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
-        raise HTTPException(status_code=403, detail="admin only")
-    cached = ozon_sales_cache.get(cabinet_id)
-    if not cached:
-        return {"error": "no cache"}
-    postings, accrual_by_date, non_item_by_date, cover_from, is_stale = cached
-
-    import datetime as dt
-    d_from = dt.date.fromisoformat(date_from)
-    d_to = dt.date.fromisoformat(date_to)
-    days_in_range = []
-    d = d_from
-    while d <= d_to:
-        days_in_range.append(d.isoformat())
-        d += dt.timedelta(days=1)
-
-    accrual_days_present = {d: (d in accrual_by_date) for d in days_in_range}
-    accrual_sku_counts = {d: len(accrual_by_date.get(d, {})) for d in days_in_range}
-
-    def pdate(p):
-        ts = p.get("in_process_at") or p.get("created_at") or ""
-        return ts[:10]
-
-    in_range = [p for p in postings if date_from <= pdate(p) <= date_to]
-    delivered = [p for p in in_range if p.get("status") == "delivered"]
-    skus_sold = set()
-    for p in delivered:
-        for prod in p.get("products", []):
-            if prod.get("sku"):
-                skus_sold.add(prod.get("sku"))
-
-    skus_with_accrual = set()
-    for d in days_in_range:
-        skus_with_accrual.update((accrual_by_date.get(d) or {}).keys())
-
-    return {
-        "cover_from": cover_from,
-        "is_stale": is_stale,
-        "accrual_days_present": accrual_days_present,
-        "accrual_sku_counts_per_day": accrual_sku_counts,
-        "delivered_postings_in_range": len(delivered),
-        "distinct_skus_sold_delivered": len(skus_sold),
-        "distinct_skus_with_any_accrual_in_range": len(skus_with_accrual),
-        "skus_sold_missing_accrual": list(skus_sold - skus_with_accrual)[:20],
-    }
-
-
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
