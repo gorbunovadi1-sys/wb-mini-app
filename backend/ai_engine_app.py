@@ -342,6 +342,24 @@ def debug_force_refresh_cache(cabinet_id: int, telegram_id: int):
     return {"status": "refreshed"}
 
 
+@app.get("/api/_debug/verify-margin/{cabinet_id}")
+def debug_verify_margin(cabinet_id: int, telegram_id: int, date_from: str, date_to: str):
+    """TEMPORARY — sanity-check account totals after the bonus/coinvestment
+    fix against the user's own Excel export. Cache-only, no live Ozon calls.
+    Remove after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cached = ozon_sales_cache.get(cabinet_id)
+    if not cached:
+        return {"error": "no cache"}
+    cpostings, caccrual, cnonitem, ccover_from, _ = cached
+    result = ozon_margin.build_margin_summary(
+        client=None, cost_prices=cabinets.get_cost_prices(cabinet_id), date_from=date_from, date_to=date_to, tax_pct=8,
+        cached_postings=cpostings, cached_accrual_by_date=caccrual, cached_non_item_by_date=cnonitem, cache_cover_from=ccover_from,
+    )
+    return result["account"]
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
