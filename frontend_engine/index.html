@@ -8,6 +8,14 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap">
 <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1" integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" crossorigin="anonymous"></script>
+<script>
+// Restore the saved theme before first paint, so there's no flash of the
+// default theme before JS further down applies the real one.
+try {
+  const savedTheme = localStorage.getItem('ai-engine-theme');
+  if (savedTheme && savedTheme !== 'default') document.documentElement.dataset.theme = savedTheme;
+} catch (e) {}
+</script>
 <style>
 :root {
   --bg: #07060f; --surface: #131024; --surface-2: #1b1733; --border: #2b2650;
@@ -21,6 +29,42 @@
   --glow: 0 0 20px rgba(139,92,246,0.35);
   --font: "Inter", -apple-system, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+/* Тема «Лайм» — чёрный + неоновый лайм */
+:root[data-theme="lime"] {
+  --bg: #0a0d07; --surface: #141a0f; --surface-2: #1c2415; --border: #2c3620;
+  --text: #ffffff; --text-secondary: #a3ac93;
+  --accent: #d4ff3d; --accent-2: #b8e62e; --accent-3: #eaff8f;
+  --accent-gradient: linear-gradient(90deg, var(--accent-2), var(--accent), var(--accent-3));
+  --accent-dim: rgba(212,255,61,0.16); --accent-text-on: #10160a;
+  --positive: #7ee787; --negative: #ff6b6b;
+  --warn-bg: rgba(212,255,61,0.14); --warn-text: #d4ff3d;
+  --scrim: rgba(4,5,2,0.7);
+  --glow: 0 0 20px rgba(212,255,61,0.3);
+}
+/* Тема «Лес» — тёмно-зелёный, мох */
+:root[data-theme="forest"] {
+  --bg: #070d09; --surface: #101a12; --surface-2: #16241a; --border: #22392a;
+  --text: #eef5ee; --text-secondary: #8fae95;
+  --accent: #8fef6a; --accent-2: #5fd98a; --accent-3: #c8ffb0;
+  --accent-gradient: linear-gradient(90deg, var(--accent-2), var(--accent), var(--accent-3));
+  --accent-dim: rgba(143,239,106,0.16); --accent-text-on: #082a0f;
+  --positive: #6fe08a; --negative: #ff7a6b;
+  --warn-bg: rgba(143,239,106,0.14); --warn-text: #8fef6a;
+  --scrim: rgba(2,6,3,0.7);
+  --glow: 0 0 20px rgba(143,239,106,0.3);
+}
+/* Тема «Огонь» — чёрный + красный */
+:root[data-theme="red"] {
+  --bg: #0d0605; --surface: #170b0a; --surface-2: #201110; --border: #3a1613;
+  --text: #ffffff; --text-secondary: #c9a29d;
+  --accent: #ff4d4d; --accent-2: #ff7a5c; --accent-3: #ff2d6b;
+  --accent-gradient: linear-gradient(90deg, var(--accent-2), var(--accent), var(--accent-3));
+  --accent-dim: rgba(255,77,77,0.16); --accent-text-on: #ffffff;
+  --positive: #4fd88f; --negative: #ff5c5c;
+  --warn-bg: rgba(255,77,77,0.14); --warn-text: #ff7a7a;
+  --scrim: rgba(6,2,1,0.7);
+  --glow: 0 0 20px rgba(255,77,77,0.35);
 }
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; }
@@ -83,6 +127,15 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 }
 .drawer nav button .ic { font-size: 15px; width: 18px; text-align: center; }
 .drawer nav button.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+
+.theme-picker { margin-top: auto; padding: 14px 8px 4px; border-top: 1px solid var(--border); }
+.theme-picker-label { font-size: 10.5px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 10px; }
+.theme-swatches { display: flex; gap: 10px; }
+.theme-swatch {
+  width: 30px; height: 30px; border-radius: 50%; border: 2px solid transparent; cursor: pointer;
+  padding: 0; position: relative; flex: none;
+}
+.theme-swatch.active { border-color: var(--text); }
 
 .period-row { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
 .kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -246,6 +299,10 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
     <button data-view="ads">Реклама</button>
     <button data-view="settings">Настройки</button>
   </nav>
+  <div class="theme-picker">
+    <div class="theme-picker-label">Тема</div>
+    <div class="theme-swatches" id="themeSwatches"></div>
+  </div>
 </aside>
 
 <header class="topbar">
@@ -254,6 +311,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
     <h1 id="viewTitle">Дашборд</h1>
     <div class="sub" id="topbarSub">выбери кабинет</div>
   </div>
+  <button class="icon-btn" id="fullscreenBtn" hidden title="Развернуть на весь экран">⛶</button>
 </header>
 
 <main>
@@ -274,12 +332,58 @@ const tg = window.Telegram && window.Telegram.WebApp;
 if (tg) {
   tg.ready();
   tg.expand();
-  // True fullscreen (hides Telegram's own header) — only on clients new
-  // enough to support it (Bot API 8.0+); expand() above still covers older ones.
-  if (typeof tg.requestFullscreen === 'function' && (!tg.isVersionAtLeast || tg.isVersionAtLeast('8.0'))) {
-    try { tg.requestFullscreen(); } catch (e) {}
-  }
+  // True fullscreen (tg.requestFullscreen — hides Telegram's own header and
+  // remaps safe areas) used to be requested automatically on every open.
+  // That broke the drawer menu (its trigger/panel landed under the remapped
+  // safe area and became unreachable) and stretched the layout oddly on
+  // phones. Back to expand() only by default — the normal, well-supported
+  // "tall app" mode — with fullscreen available on demand via the topbar
+  // button instead (see toggleFullscreen()).
   tg.disableVerticalSwipes && tg.disableVerticalSwipes();
+}
+function fullscreenSupported() {
+  return !!(tg && typeof tg.requestFullscreen === 'function' && (!tg.isVersionAtLeast || tg.isVersionAtLeast('8.0')));
+}
+function toggleFullscreen() {
+  if (!tg) return;
+  try {
+    if (tg.isFullscreen) { tg.exitFullscreen && tg.exitFullscreen(); }
+    else { tg.requestFullscreen && tg.requestFullscreen(); }
+  } catch (e) {}
+}
+
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function cssVarAlpha(name, alpha) {
+  const hex = cssVar(name).replace('#', '');
+  const r = parseInt(hex.slice(0, 2), 16), g = parseInt(hex.slice(2, 4), 16), b = parseInt(hex.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+const THEMES = [
+  { id: 'default', name: 'Фиолетовая', swatch: 'linear-gradient(135deg, #4f7cff, #ec4899)' },
+  { id: 'lime', name: 'Лайм', swatch: 'linear-gradient(135deg, #0a0d07, #d4ff3d)' },
+  { id: 'forest', name: 'Лес', swatch: 'linear-gradient(135deg, #070d09, #8fef6a)' },
+  { id: 'red', name: 'Огонь', swatch: 'linear-gradient(135deg, #0d0605, #ff4d4d)' },
+];
+
+function applyTheme(id) {
+  if (id === 'default') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = id;
+  try { localStorage.setItem('ai-engine-theme', id); } catch (e) {}
+  renderThemeSwatches();
+  // Charts bake colors into the canvas at creation time — cheapest way to
+  // pick up the new palette is to just re-render whatever's on screen.
+  // loadView() itself is cheap here: every loader below skips re-fetching
+  // when it already has cached data and just re-renders from it.
+  if (typeof loadView === 'function') loadView();
+}
+
+function renderThemeSwatches() {
+  const el = document.getElementById('themeSwatches');
+  if (!el) return;
+  const current = document.documentElement.dataset.theme || 'default';
+  el.innerHTML = THEMES.map(t => `<button class="theme-swatch ${t.id === current ? 'active' : ''}" data-theme-id="${t.id}" style="background:${t.swatch}" title="${t.name}"></button>`).join('');
+  el.querySelectorAll('.theme-swatch').forEach(btn => btn.addEventListener('click', () => applyTheme(btn.dataset.themeId)));
 }
 function initData() { return tg ? tg.initData : ''; }
 
@@ -337,6 +441,7 @@ let stockItems = null;
 const VIEW_TITLES = { dashboard: 'Дашборд', analytics: 'Аналитика', detail: 'Детализация', pricing: 'Цены', stock: 'Остатки', actions: 'Акции', ads: 'Реклама', settings: 'Настройки' };
 
 async function boot() {
+  renderThemeSwatches();
   try {
     const data = await apiFetch('/api/me/cabinets');
     cabinetsList = data.cabinets;
@@ -353,6 +458,12 @@ async function boot() {
   scrim.addEventListener('click', () => {
     drawer.classList.remove('open'); scrim.classList.remove('open');
   });
+
+  const fsBtn = document.getElementById('fullscreenBtn');
+  if (fullscreenSupported()) {
+    fsBtn.hidden = false;
+    fsBtn.addEventListener('click', toggleFullscreen);
+  }
   document.querySelectorAll('#viewNav button').forEach(btn => {
     btn.addEventListener('click', () => {
       activeView = btn.dataset.view;
@@ -585,12 +696,12 @@ function renderDashboard(data, cabinet) {
     const canvas = document.getElementById('revenueChart');
     const ctx = canvas.getContext('2d');
     const lineGradient = ctx.createLinearGradient(0, 0, canvas.clientWidth || 300, 0);
-    lineGradient.addColorStop(0, '#4f7cff');
-    lineGradient.addColorStop(0.55, '#8b5cf6');
-    lineGradient.addColorStop(1, '#ec4899');
+    lineGradient.addColorStop(0, cssVar('--accent-2'));
+    lineGradient.addColorStop(0.55, cssVar('--accent'));
+    lineGradient.addColorStop(1, cssVar('--accent-3'));
     const fillGradient = ctx.createLinearGradient(0, 0, 0, canvas.clientHeight || 200);
-    fillGradient.addColorStop(0, 'rgba(139,92,246,0.32)');
-    fillGradient.addColorStop(1, 'rgba(139,92,246,0.02)');
+    fillGradient.addColorStop(0, cssVar('--accent-dim'));
+    fillGradient.addColorStop(1, 'transparent');
 
     new Chart(canvas, {
       type: 'line',
@@ -606,8 +717,8 @@ function renderDashboard(data, cabinet) {
         responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => fmtMoney(c.parsed.y) } } },
         scales: {
-          x: { grid: { display: false }, ticks: { color: '#9691b8', maxTicksLimit: 6, font: { size: 10 } } },
-          y: { grid: { color: '#2b2650' }, ticks: { color: '#9691b8', font: { size: 10 }, callback: v => (v/1000) + 'k' } }
+          x: { grid: { display: false }, ticks: { color: cssVar('--text-secondary'), maxTicksLimit: 6, font: { size: 10 } } },
+          y: { grid: { color: cssVar('--border') }, ticks: { color: cssVar('--text-secondary'), font: { size: 10 }, callback: v => (v/1000) + 'k' } }
         }
       }
     });
@@ -744,11 +855,11 @@ function renderAnalytics(data) {
         datasets: [
           {
             type: 'bar', label: 'Количество, шт.', data: daily.map(d => d.qty),
-            backgroundColor: 'rgba(139,92,246,0.45)', yAxisID: 'y1', order: 2,
+            backgroundColor: cssVarAlpha('--accent', 0.45), yAxisID: 'y1', order: 2,
           },
           {
             type: 'line', label: 'Сумма', data: daily.map(d => d.revenue),
-            borderColor: '#ec4899', backgroundColor: 'transparent',
+            borderColor: cssVar('--accent-3'), backgroundColor: 'transparent',
             tension: 0.35, pointRadius: 0, borderWidth: 2.5, yAxisID: 'y', order: 1,
           },
         ],
@@ -756,13 +867,13 @@ function renderAnalytics(data) {
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: {
-          legend: { labels: { color: '#c9c5e8', font: { size: 11 } } },
+          legend: { labels: { color: cssVar('--text-secondary'), font: { size: 11 } } },
           tooltip: { callbacks: { label: c => c.dataset.type === 'bar' ? `${c.parsed.y} шт.` : fmtMoney(c.parsed.y) } },
         },
         scales: {
-          x: { grid: { display: false }, ticks: { color: '#9691b8', maxTicksLimit: 6, font: { size: 10 } } },
-          y: { position: 'left', grid: { color: '#2b2650' }, ticks: { color: '#9691b8', font: { size: 10 }, callback: v => (v/1000) + 'k' } },
-          y1: { position: 'right', grid: { display: false }, ticks: { color: '#9691b8', font: { size: 10 } } },
+          x: { grid: { display: false }, ticks: { color: cssVar('--text-secondary'), maxTicksLimit: 6, font: { size: 10 } } },
+          y: { position: 'left', grid: { color: cssVar('--border') }, ticks: { color: cssVar('--text-secondary'), font: { size: 10 }, callback: v => (v/1000) + 'k' } },
+          y1: { position: 'right', grid: { display: false }, ticks: { color: cssVar('--text-secondary'), font: { size: 10 } } },
         },
       },
     });
@@ -775,15 +886,15 @@ function renderAnalytics(data) {
         labels: topByRevenue.map(p => (p.title || '').slice(0, 16) + ((p.title || '').length > 16 ? '…' : '')),
         datasets: [{
           data: topByRevenue.map(p => p.revenue),
-          backgroundColor: 'rgba(79,124,255,0.55)',
+          backgroundColor: cssVarAlpha('--accent-2', 0.55),
         }],
       },
       options: {
         indexAxis: 'y', responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => fmtMoney(c.parsed.x) } } },
         scales: {
-          x: { grid: { color: '#2b2650' }, ticks: { color: '#9691b8', font: { size: 10 }, callback: v => (v/1000) + 'k' } },
-          y: { grid: { display: false }, ticks: { color: '#c9c5e8', font: { size: 10 } } },
+          x: { grid: { color: cssVar('--border') }, ticks: { color: cssVar('--text-secondary'), font: { size: 10 }, callback: v => (v/1000) + 'k' } },
+          y: { grid: { display: false }, ticks: { color: cssVar('--text-secondary'), font: { size: 10 } } },
         },
       },
     });
