@@ -383,6 +383,8 @@ def debug_ozon_postings(cabinet_id: int, telegram_id: int, date_from: str, date_
         "qty_delivered_only": sum_qty(delivered_only),
         "qty_all_statuses_incl_cancelled": sum_qty(all_statuses),
         "revenue_all_statuses_incl_cancelled__top_level_price": round(sum_top_level_price(all_statuses), 2),
+        "revenue_all_statuses_incl_cancelled__financial_customer_price": round(sum_financial_field("customer_price", all_statuses), 2),
+        "revenue_all_statuses_incl_cancelled__financial_price": round(sum_financial_field("price", all_statuses), 2),
         "non_cancelled__top_level_price": round(sum_top_level_price(non_cancelled), 2),
         "non_cancelled__financial_price": round(sum_financial_field("price", non_cancelled), 2),
         "non_cancelled__financial_customer_price": round(sum_financial_field("customer_price", non_cancelled), 2),
