@@ -326,6 +326,31 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
     raise ValueError(f"unknown marketplace {cabinet['marketplace']}")
 
 
+@app.get("/api/_debug/ozon-cabinets-health")
+def debug_ozon_cabinets_health(telegram_id: int):
+    """TEMPORARY — checking why a large Ozon cabinet's Дашборд isn't
+    loading: cache size/staleness per cabinet. Remove after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    out = []
+    for cab in cabinets.list_all_active_cabinets(marketplace="ozon"):
+        cached = ozon_sales_cache.get(cab["id"])
+        if cached:
+            postings, accrual_by_date, non_item_by_date, cover_from, is_stale = cached
+            out.append({
+                "cabinet_id": cab["id"],
+                "display_name": cab["display_name"],
+                "cached": True,
+                "postings_count": len(postings),
+                "accrual_days_count": len(accrual_by_date),
+                "is_stale": is_stale,
+                "cover_from": cover_from,
+            })
+        else:
+            out.append({"cabinet_id": cab["id"], "display_name": cab["display_name"], "cached": False})
+    return out
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
