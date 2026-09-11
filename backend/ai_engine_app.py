@@ -326,6 +326,41 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
     raise ValueError(f"unknown marketplace {cabinet['marketplace']}")
 
 
+@app.get("/api/_debug/ozon-postings/{cabinet_id}")
+def debug_ozon_postings(cabinet_id: int, telegram_id: int, date_from: str, date_to: str, limit: int = 2):
+    """TEMPORARY — inspecting the real posting schema against a live revenue
+    mismatch report. Reads only from ozon_sales_cache (no new Ozon calls).
+    Remove after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cached = ozon_sales_cache.get(cabinet_id)
+    if not cached:
+        return {"error": "no cache for this cabinet"}
+    postings, _, _, cover_from, is_stale = cached
+
+    def pdate(p):
+        ts = p.get("in_process_at") or p.get("created_at") or ""
+        return ts[:10]
+
+    in_range = [p for p in postings if date_from <= pdate(p) <= date_to]
+    from collections import Counter
+    status_counts = Counter(p.get("status") for p in in_range)
+    total_top_level_price = sum(
+        float(prod.get("price") or 0) * (prod.get("quantity") or 0)
+        for p in in_range if p.get("status") != "cancelled"
+        for prod in p.get("products", [])
+    )
+    return {
+        "cache_cover_from": cover_from,
+        "is_stale": is_stale,
+        "total_cached_postings": len(postings),
+        "postings_in_range": len(in_range),
+        "status_counts": status_counts,
+        "sum_top_level_price_x_qty_non_cancelled": round(total_top_level_price, 2),
+        "sample": in_range[:limit],
+    }
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
