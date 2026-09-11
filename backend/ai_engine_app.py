@@ -326,57 +326,55 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
     raise ValueError(f"unknown marketplace {cabinet['marketplace']}")
 
 
-@app.get("/api/_debug/ozon-accrual-categories/{cabinet_id}")
-def debug_ozon_accrual_categories(cabinet_id: int, telegram_id: int, days: int = 10):
-    """TEMPORARY — checking whether return logistics shows up under a
-    accrued_category we don't currently handle (only POSTING/ITEM/NON_ITEM
-    are parsed in ozon_margin._fetch_accrual_for_day). Makes `days` live
-    accrual/by-day calls. Remove after use."""
+@app.get("/api/_debug/ozon-cache-check/{cabinet_id}")
+def debug_ozon_cache_check(cabinet_id: int, telegram_id: int, date_from: str, date_to: str):
+    """TEMPORARY — checking why commission/delivery/item_fees show 0 for a
+    recent narrow period despite real buyouts. Reads only from cache, no
+    live Ozon calls. Remove after use."""
     if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
         raise HTTPException(status_code=403, detail="admin only")
-    cabinet = cabinets.get_cabinet(cabinet_id)
-    if not cabinet or cabinet["marketplace"] != "ozon":
-        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
-    client = _build_client(cabinet, ozon_max_retries=3)
-    from collections import Counter
+    cached = ozon_sales_cache.get(cabinet_id)
+    if not cached:
+        return {"error": "no cache"}
+    postings, accrual_by_date, non_item_by_date, cover_from, is_stale = cached
+
     import datetime as dt
-    cat_counts = Counter()
-    unknown_examples = []
-    posting_field_keys = set()
-    delivery_samples = []
-    negative_delivery_samples = []
-    today = dt.date.today()
-    for i in range(days):
-        d = (today - dt.timedelta(days=i)).isoformat()
-        try:
-            accruals = client.get_accrual_by_day(d)
-        except Exception as e:
-            cat_counts[f"ERROR on {d}: {e}"] += 1
-            continue
-        for a in accruals:
-            cat = a.get("accrued_category")
-            cat_counts[str(cat)] += 1
-            if cat == "POSTING":
-                for prod in ((a.get("posting") or {}).get("products") or []):
-                    posting_field_keys.update(prod.keys())
-                    delivery = prod.get("delivery") or {}
-                    if len(delivery_samples) < 2:
-                        delivery_samples.append({"date": d, "delivery": delivery, "commission": prod.get("commission")})
-                    amt = (delivery.get("total_accrued") or {}).get("amount")
-                    try:
-                        if amt is not None and float(amt) > 0 and len(negative_delivery_samples) < 3:
-                            negative_delivery_samples.append({"date": d, "posting_number": (a.get("posting") or {}).get("posting_number"), "delivery": delivery})
-                    except (TypeError, ValueError):
-                        pass
-            if cat not in ("POSTING", "ITEM", "NON_ITEM") and len(unknown_examples) < 3:
-                unknown_examples.append(a)
+    d_from = dt.date.fromisoformat(date_from)
+    d_to = dt.date.fromisoformat(date_to)
+    days_in_range = []
+    d = d_from
+    while d <= d_to:
+        days_in_range.append(d.isoformat())
+        d += dt.timedelta(days=1)
+
+    accrual_days_present = {d: (d in accrual_by_date) for d in days_in_range}
+    accrual_sku_counts = {d: len(accrual_by_date.get(d, {})) for d in days_in_range}
+
+    def pdate(p):
+        ts = p.get("in_process_at") or p.get("created_at") or ""
+        return ts[:10]
+
+    in_range = [p for p in postings if date_from <= pdate(p) <= date_to]
+    delivered = [p for p in in_range if p.get("status") == "delivered"]
+    skus_sold = set()
+    for p in delivered:
+        for prod in p.get("products", []):
+            if prod.get("sku"):
+                skus_sold.add(prod.get("sku"))
+
+    skus_with_accrual = set()
+    for d in days_in_range:
+        skus_with_accrual.update((accrual_by_date.get(d) or {}).keys())
+
     return {
-        "days_checked": days,
-        "category_counts": dict(cat_counts),
-        "posting_product_field_keys": sorted(posting_field_keys),
-        "delivery_samples": delivery_samples,
-        "positive_delivery_samples": negative_delivery_samples,
-        "unknown_category_examples": unknown_examples,
+        "cover_from": cover_from,
+        "is_stale": is_stale,
+        "accrual_days_present": accrual_days_present,
+        "accrual_sku_counts_per_day": accrual_sku_counts,
+        "delivered_postings_in_range": len(delivered),
+        "distinct_skus_sold_delivered": len(skus_sold),
+        "distinct_skus_with_any_accrual_in_range": len(skus_with_accrual),
+        "skus_sold_missing_accrual": list(skus_sold - skus_with_accrual)[:20],
     }
 
 
