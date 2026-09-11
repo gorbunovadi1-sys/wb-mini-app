@@ -18,12 +18,18 @@ def list_actions(client) -> list:
     ]
 
 
-def _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct=0, acquiring=0, bonus=0):
+def _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct=0, acquiring=0):
+    # No "bonus" (Баллы за скидки) here on purpose — deciding whether to
+    # join/stay in a promotion is a forward-looking call, and bonus is only
+    # known after a sale actually happens, tied to whether Ozon funds a
+    # discount on this specific item at that time. Дашборд/Детализация
+    # report a closed period (bonus already known) and do include it —
+    # this is the other case, a decision about what to do next.
     if not price:
         return None
     expense = price * (commission_pct / 100) + logistics_estimate + (acquiring or 0)
     tax = price * (tax_pct / 100)
-    return round(price - cogs_unit - expense - tax + (bonus or 0), 2)
+    return round(price - cogs_unit - expense - tax, 2)
 
 
 def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
@@ -62,6 +68,9 @@ def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
             "logistics_estimate": logistics_estimate,
             "tax_pct": tax_pct,
             "acquiring": acquiring,
+            # Kept for reference only (e.g. "this item recently earned ~X in
+            # bonus") — deliberately NOT fed into the profit below. See
+            # _profit's docstring.
             "bonus": bonus,
             "has_cost_price": has_cost_price,
             "rate_source": rate_source,
@@ -71,7 +80,7 @@ def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
             # would look like a real number while actually excluding the
             # cost of the item entirely, which is actively misleading rather
             # than just imprecise.
-            "profit": _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct, acquiring, bonus) if (info and has_cost_price) else None,
+            "profit": _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct, acquiring) if (info and has_cost_price) else None,
         }
 
     in_action = [_enrich(p, "action_price") for p in client.get_action_products(action_id)]
