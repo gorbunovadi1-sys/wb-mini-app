@@ -66,6 +66,18 @@ try {
   --scrim: rgba(6,2,1,0.7);
   --glow: 0 0 20px rgba(255,77,77,0.35);
 }
+/* Тема «Светлая» — белый фон, тот же фиолетовый акцент */
+:root[data-theme="light"] {
+  --bg: #f7f6fb; --surface: #ffffff; --surface-2: #f0eef7; --border: #e1def0;
+  --text: #171426; --text-secondary: #6b6690;
+  --accent: #8b5cf6; --accent-2: #4f7cff; --accent-3: #ec4899;
+  --accent-gradient: linear-gradient(90deg, var(--accent-2), var(--accent), var(--accent-3));
+  --accent-dim: rgba(139,92,246,0.10); --accent-text-on: #ffffff;
+  --positive: #16a34a; --negative: #dc2626;
+  --warn-bg: rgba(236,72,153,0.10); --warn-text: #db2777;
+  --scrim: rgba(23,20,38,0.35);
+  --glow: 0 0 20px rgba(139,92,246,0.2);
+}
 * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; }
 body { font-family: var(--font); background: var(--bg); color: var(--text); font-size: 14px; }
@@ -364,6 +376,7 @@ const THEMES = [
   { id: 'lime', name: 'Лайм', swatch: 'linear-gradient(135deg, #0a0d07, #d4ff3d)' },
   { id: 'forest', name: 'Лес', swatch: 'linear-gradient(135deg, #070d09, #8fef6a)' },
   { id: 'red', name: 'Огонь', swatch: 'linear-gradient(135deg, #0d0605, #ff4d4d)' },
+  { id: 'light', name: 'Светлая', swatch: 'linear-gradient(135deg, #ffffff, #8b5cf6)' },
 ];
 
 function applyTheme(id) {
