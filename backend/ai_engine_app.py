@@ -345,18 +345,40 @@ def debug_ozon_postings(cabinet_id: int, telegram_id: int, date_from: str, date_
     in_range = [p for p in postings if date_from <= pdate(p) <= date_to]
     from collections import Counter
     status_counts = Counter(p.get("status") for p in in_range)
-    total_top_level_price = sum(
-        float(prod.get("price") or 0) * (prod.get("quantity") or 0)
-        for p in in_range if p.get("status") != "cancelled"
-        for prod in p.get("products", [])
-    )
+
+    def sum_top_level_price(statuses):
+        return sum(
+            float(prod.get("price") or 0) * (prod.get("quantity") or 0)
+            for p in in_range if p.get("status") in statuses
+            for prod in p.get("products", [])
+        )
+
+    def sum_financial_field(field, statuses):
+        total = 0.0
+        for p in in_range:
+            if p.get("status") not in statuses:
+                continue
+            fin = (p.get("financial_data") or {}).get("products") or []
+            for fp in fin:
+                total += float(fp.get(field) or 0) * (fp.get("quantity") or 0)
+        return total
+
+    non_cancelled = {"delivered", "delivering", "awaiting_deliver", "awaiting_packaging", "acceptance_in_progress", "sent_by_seller"}
+    delivered_only = {"delivered"}
     return {
         "cache_cover_from": cover_from,
         "is_stale": is_stale,
         "total_cached_postings": len(postings),
         "postings_in_range": len(in_range),
         "status_counts": status_counts,
-        "sum_top_level_price_x_qty_non_cancelled": round(total_top_level_price, 2),
+        "non_cancelled__top_level_price": round(sum_top_level_price(non_cancelled), 2),
+        "non_cancelled__financial_price": round(sum_financial_field("price", non_cancelled), 2),
+        "non_cancelled__financial_customer_price": round(sum_financial_field("customer_price", non_cancelled), 2),
+        "non_cancelled__financial_payout": round(sum_financial_field("payout", non_cancelled), 2),
+        "delivered_only__top_level_price": round(sum_top_level_price(delivered_only), 2),
+        "delivered_only__financial_price": round(sum_financial_field("price", delivered_only), 2),
+        "delivered_only__financial_customer_price": round(sum_financial_field("customer_price", delivered_only), 2),
+        "delivered_only__financial_payout": round(sum_financial_field("payout", delivered_only), 2),
         "sample": in_range[:limit],
     }
 
