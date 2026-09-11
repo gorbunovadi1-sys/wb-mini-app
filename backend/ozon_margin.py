@@ -119,7 +119,19 @@ def _fetch_accrual_for_day(client, date_str: str):
                 sku = str(sku)
                 commission = prod.get("commission") or {}
                 delivery = prod.get("delivery") or {}
-                per_sku[sku]["commission"] += _accrual_amount(commission, "commission", "amount")
+                # commission.bonus/coinvestment are real credits Ozon pays
+                # back to the seller — verified against a real seller's own
+                # "Свод по артикулам" export: for items enrolled in Ozon's
+                # own discount-funding programs, bonus alone offset 60-80%
+                # of the raw commission deduction (one SKU: −388,639 raw
+                # commission vs +365,301 in bonus/other-accrual credits, netting
+                # to a much smaller real cost). Reading only "commission"
+                # and ignoring these two silently overstated the true
+                # commission cost by that entire credited amount.
+                commission_amount = _accrual_amount(commission, "commission", "amount")
+                bonus = _accrual_amount(commission, "bonus", "amount")
+                coinvestment = _accrual_amount(commission, "coinvestment", "amount")
+                per_sku[sku]["commission"] += commission_amount + bonus + coinvestment
                 per_sku[sku]["delivery"] += _accrual_amount(delivery, "total_accrued", "amount")
         elif cat == "ITEM":
             for fee_group in ((a.get("item_fees") or {}).get("fees") or []):
@@ -296,11 +308,16 @@ def build_margin_summary(
     products = []
     for offer_id, p in per_offer_buyouts.items():
         accrual = per_offer_accrual.get(offer_id, {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0})
-        # Ozon reports these as negative (they're deductions); store as
-        # positive cost magnitudes for display, subtract explicitly below.
-        commission = abs(accrual["commission"])
-        delivery = abs(accrual["delivery"])
-        item_fees = abs(accrual["item_fees"])
+        # Ozon reports these as negative (they're deductions) — normally.
+        # accrual["commission"] now also nets in bonus/coinvestment credits
+        # (see _fetch_accrual_for_day), which can in principle outweigh the
+        # raw commission deduction for a heavily-subsidized item, flipping
+        # it positive (a net rebate). Negate rather than abs() so that case
+        # still nets correctly into profit instead of being miscounted as
+        # an extra cost.
+        commission = -accrual["commission"]
+        delivery = -accrual["delivery"]
+        item_fees = -accrual["item_fees"]
         cogs_unit = cost_prices.get(offer_id, 0)
         cogs_total = cogs_unit * p["qty"]
         tax = p["revenue"] * (tax_pct / 100)
