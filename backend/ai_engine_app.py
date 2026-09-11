@@ -326,41 +326,50 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
     raise ValueError(f"unknown marketplace {cabinet['marketplace']}")
 
 
-@app.get("/api/_debug/ozon-accrual-postings/{cabinet_id}")
-def debug_ozon_accrual_postings(cabinet_id: int, telegram_id: int, date_from: str, date_to: str):
-    """TEMPORARY — checking whether /v1/finance/accrual/postings and
-    /v1/finance/accrual/types (Ozon's currently-recommended financial-report
-    methods) carry the cost categories missing from accrual/by-day (Услуги
-    партнёров beyond Эквайринг, Другие услуги, Продвижение, Компенсации,
-    Возвраты). One live call each. Remove after use."""
+@app.get("/api/_debug/ozon-accrual-types/{cabinet_id}")
+def debug_ozon_accrual_types(cabinet_id: int, telegram_id: int):
+    """TEMPORARY — dump the full /v1/finance/accrual/types reference table
+    (all type_ids Ozon can emit, with names/descriptions), to check whether
+    the cost categories missing from accrual_by_day (Услуги партнёров beyond
+    Эквайринг, Другие услуги, Продвижение, Компенсации, Возвраты) even have
+    corresponding type_ids at all. Remove after use."""
     if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
         raise HTTPException(status_code=403, detail="admin only")
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["marketplace"] != "ozon":
         raise HTTPException(status_code=400, detail="not an Ozon cabinet")
     client = _build_client(cabinet, ozon_max_retries=3)
-    postings = client.get_accrual_postings(date_from, date_to)
     types = client.get_accrual_types()
-    p_result = postings.get("result") if isinstance(postings, dict) else postings
-    if isinstance(p_result, dict):
-        top_keys = list(p_result.keys())
-        rows = p_result.get("postings") or p_result.get("rows") or []
-    elif isinstance(p_result, list):
-        top_keys = ["<list>"]
-        rows = p_result
-    else:
-        top_keys, rows = [], []
-    all_keys = set()
-    for r in rows[:50] if isinstance(rows, list) else []:
-        if isinstance(r, dict):
-            all_keys.update(r.keys())
+    return {"accrual_types": types.get("accrual_types", []), "count": len(types.get("accrual_types", []))}
+
+
+@app.get("/api/_debug/ozon-accrual-postings/{cabinet_id}")
+def debug_ozon_accrual_postings(cabinet_id: int, telegram_id: int, date_from: str, date_to: str, sample: int = 20):
+    """TEMPORARY — pull a sample of real posting_numbers for the given date
+    range (from FBS+FBO posting lists) and run them through
+    /v1/finance/accrual/postings, to see whether any type_id shows up that
+    never appears via accrual/by-day for the same cabinet/period. Remove
+    after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet, ozon_max_retries=3)
+    fbs = client.get_fbs_postings(date_from, date_to)
+    fbo = client.get_fbo_postings(date_from, date_to)
+    numbers = [p.get("posting_number") for p in (fbs + fbo) if p.get("posting_number")]
+    numbers = numbers[:sample]
+    posting_accruals = client.get_accrual_postings(numbers) if numbers else []
+    all_type_ids = set()
+    for pa in posting_accruals:
+        for a in pa.get("accruals", []):
+            all_type_ids.add(a.get("type_id"))
     return {
-        "postings_top_level_keys": list(postings.keys()) if isinstance(postings, dict) else str(type(postings)),
-        "postings_result_keys": top_keys,
-        "postings_rows_count": len(rows) if isinstance(rows, list) else None,
-        "postings_row_keys": sorted(all_keys),
-        "postings_sample_row": rows[0] if isinstance(rows, list) and rows else None,
-        "types_raw": types,
+        "postings_found": len(numbers),
+        "posting_accruals_count": len(posting_accruals),
+        "type_ids_seen": sorted(t for t in all_type_ids if t is not None),
+        "sample": posting_accruals[:3],
     }
 
 

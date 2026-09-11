@@ -256,17 +256,15 @@ class OzonClient:
         data = self._post("/v1/finance/accrual/by-day", {"date": date_str})
         return data.get("accruals", [])
 
-    def get_accrual_postings(self, date_from, date_to):
-        """POST /v1/finance/accrual/postings — per-posting accrual breakdown,
-        one of the two methods Ozon's dev-news article recommends alongside
-        accrual/by-day as the current (non-deprecated) financial-report
-        methods. Being probed as a possible source for cost categories
-        missing from accrual/by-day (see project_ozon_accrual_api_gap memory)."""
-        data = self._post("/v1/finance/accrual/postings", {
-            "date": {"from": date_from, "to": date_to},
-            "page": 1, "page_size": 1000,
-        })
-        return data
+    def get_accrual_postings(self, posting_numbers):
+        """POST /v1/finance/accrual/postings — accrual line items for specific
+        postings (posting_numbers: list of up to 200 strings), each entry
+        carrying a type_id (decode via get_accrual_types). Same underlying
+        ledger as accrual/by-day, just queried by posting instead of by date —
+        being probed as a possible source for cost categories missing from
+        accrual/by-day (see project_ozon_accrual_api_gap memory)."""
+        data = self._post("/v1/finance/accrual/postings", {"posting_numbers": posting_numbers})
+        return data.get("posting_accruals", [])
 
     def get_accrual_types(self):
         """POST /v1/finance/accrual/types — reference list of accrual type_ids
