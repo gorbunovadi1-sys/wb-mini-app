@@ -29,6 +29,13 @@ def _real_rates_by_offer(cabinet_id: int) -> dict:
         rates[p["offer_id"]] = {
             "commission_pct": round(p["commission"] / p["revenue"] * 100, 2),
             "logistics_per_unit": round(p["delivery"] / p["qty"], 2),
+            # "item_fees" here is Ozon's acquiring fee specifically for this
+            # cabinet (verified live: every ITEM-category accrual entry on
+            # it carries the same type_id — no other item-level fee type has
+            # shown up) — exposed under its real name for the Цены
+            # breakdown rather than the generic "сборы" label.
+            "acquiring_per_unit": round(p["item_fees"] / p["qty"], 2),
+            "bonus_per_unit": round(p["bonus"] / p["qty"], 2),
         }
     return rates
 
@@ -86,6 +93,8 @@ def get_pricing_list(client, cabinet_id: int) -> list:
         if real:
             sales_pct = real["commission_pct"]
             logistics_estimate = real["logistics_per_unit"]
+            acquiring = real["acquiring_per_unit"]
+            bonus = real["bonus_per_unit"]
             rate_source = "real"
         else:
             # No sales history yet to derive real rates from — fall back to
@@ -93,9 +102,13 @@ def get_pricing_list(client, cabinet_id: int) -> list:
             # product's stock is actually sitting in (defaults to FBS when
             # there's no stock either way, since that's this app's most
             # common setup, but a client whose catalog is FBO gets FBO rates
-            # automatically, no manual switch needed).
+            # automatically, no manual switch needed). Acquiring/bonus have
+            # no equivalent "reference rate" field to estimate from — both
+            # are 0 until this offer has real sales history.
             fulfillment = "fbo" if stock["fbo"] > stock["fbs"] else "fbs"
             sales_pct, logistics_estimate = _estimate_rate(commissions, fulfillment)
+            acquiring = 0
+            bonus = 0
             rate_source = "estimate"
 
         items.append({
@@ -108,6 +121,8 @@ def get_pricing_list(client, cabinet_id: int) -> list:
             "cogs_unit": cost_prices.get(offer_id, 0),
             "commission_pct": sales_pct,
             "logistics_estimate": logistics_estimate,
+            "acquiring": acquiring,
+            "bonus": bonus,
             "rate_source": rate_source,
             "tax_pct": tax_pct,
             "fbo_stock": stock["fbo"],

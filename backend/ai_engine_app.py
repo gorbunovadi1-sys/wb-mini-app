@@ -326,44 +326,6 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
     raise ValueError(f"unknown marketplace {cabinet['marketplace']}")
 
 
-@app.get("/api/_debug/ozon-item-fees/{cabinet_id}")
-def debug_ozon_item_fees(cabinet_id: int, telegram_id: int, days: int = 5):
-    """TEMPORARY — need the exact field that names an ITEM-category fee (to
-    isolate "Эквайринг" specifically for the new Цены breakdown), and
-    whether NON_ITEM entries carry a name too (for "Реклама"/"Прочее").
-    Remove after use."""
-    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
-        raise HTTPException(status_code=403, detail="admin only")
-    cabinet = cabinets.get_cabinet(cabinet_id)
-    if not cabinet or cabinet["marketplace"] != "ozon":
-        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
-    client = _build_client(cabinet, ozon_max_retries=3)
-    import datetime as dt
-    from collections import Counter
-    item_fee_names = Counter()
-    item_samples = []
-    non_item_samples = []
-    today = dt.date.today()
-    for i in range(days):
-        d = (today - dt.timedelta(days=i)).isoformat()
-        try:
-            accruals = client.get_accrual_by_day(d)
-        except Exception:
-            continue
-        for a in accruals:
-            cat = a.get("accrued_category")
-            if cat == "ITEM":
-                for fee_group in ((a.get("item_fees") or {}).get("fees") or []):
-                    for fee in (fee_group.get("fees") or []):
-                        name = fee.get("name") or fee.get("type") or list(fee.keys())
-                        item_fee_names[str(name)] += 1
-                        if len(item_samples) < 3:
-                            item_samples.append(fee)
-            elif cat == "NON_ITEM" and len(non_item_samples) < 3:
-                non_item_samples.append(a.get("non_item_fee"))
-    return {"item_fee_name_counts": dict(item_fee_names), "item_samples": item_samples, "non_item_samples": non_item_samples}
-
-
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:

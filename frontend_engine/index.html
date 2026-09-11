@@ -257,6 +257,9 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
   padding: 7px 8px; font-family: var(--font-mono); font-size: 13px; color: var(--text);
 }
 .price-summary { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-secondary); font-family: var(--font-mono); margin-bottom: 8px; }
+.expense-breakdown { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 4px; }
+.expense-row { display: flex; justify-content: space-between; font-size: 11px; font-family: var(--font-mono); color: var(--text-secondary); }
+.expense-row span:last-child { color: var(--text); }
 .price-profit-row { display: flex; justify-content: space-between; align-items: baseline; padding-top: 8px; border-top: 1px solid var(--border); }
 .price-profit-row .pp-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; }
 .price-profit-row .pp-value { font-family: var(--font-mono); font-size: 17px; font-weight: 700; }
@@ -1106,18 +1109,21 @@ function wbPriceCardHtml(p) {
   </div>`;
 }
 
-function computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct) {
-  const expensePerUnit = price * (commissionPct / 100) + logisticsEstimate;
+function computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus) {
+  acquiring = acquiring || 0; bonus = bonus || 0;
+  const commission = price * (commissionPct / 100);
   const tax = price * ((taxPct || 0) / 100);
-  const profit = price - cogs - expensePerUnit - tax;
-  return { expensePerUnit, tax, profit };
+  const expensePerUnit = commission + logisticsEstimate + acquiring;
+  const profit = price - cogs - expensePerUnit - tax + bonus;
+  return { commission, logistics: logisticsEstimate, acquiring, bonus, expensePerUnit, tax, profit };
 }
 
-function suggestPrice(cogs, commissionPct, logisticsEstimate, targetMarginPct, taxPct) {
-  // price - cogs - price*commissionPct/100 - logistics - price*taxPct/100 = price*targetMarginPct/100
+function suggestPrice(cogs, commissionPct, logisticsEstimate, targetMarginPct, taxPct, acquiring, bonus) {
+  acquiring = acquiring || 0; bonus = bonus || 0;
+  // price - cogs - price*commissionPct/100 - logistics - acquiring - price*taxPct/100 + bonus = price*targetMarginPct/100
   const denom = 1 - commissionPct / 100 - (taxPct || 0) / 100 - targetMarginPct / 100;
   if (denom <= 0) return null;
-  return (cogs + logisticsEstimate) / denom;
+  return (cogs + logisticsEstimate + acquiring - bonus) / denom;
 }
 
 function renderPricing(items) {
@@ -1182,7 +1188,8 @@ function renderPricing(items) {
 function priceCardHtml(p) {
   const staged = pendingPriceChanges[p.offer_id] !== undefined;
   return `<div class="price-card ${staged ? 'staged' : ''}" data-offer="${p.offer_id}"
-      data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-tax="${p.tax_pct || 0}" data-old-price="${p.old_price || 0}">
+      data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-tax="${p.tax_pct || 0}"
+      data-acquiring="${p.acquiring || 0}" data-bonus="${p.bonus || 0}" data-old-price="${p.old_price || 0}">
     <div class="p-name">${p.name}</div>
     <div class="p-offer copy-chip" data-copy="${p.offer_id}">${p.offer_id}</div>
     <div class="price-fields">
@@ -1196,14 +1203,17 @@ function priceCardHtml(p) {
       </div>
     </div>
     <div class="price-summary">
-      <span>Комиссия ${p.commission_pct}%</span>
-      <span class="expense-out">расход/шт. —</span>
-    </div>
-    <div class="price-summary">
       <span>Остаток FBO: ${fmtNum(p.fbo_stock || 0)}</span>
       <span>FBS: ${fmtNum(p.fbs_stock || 0)}</span>
     </div>
     ${rateSourceBadge(p.rate_source)}
+    <div class="expense-breakdown">
+      <div class="expense-row"><span>Комиссия (${p.commission_pct}%)</span><span class="eb-commission">—</span></div>
+      <div class="expense-row"><span>Логистика</span><span class="eb-logistics">—</span></div>
+      <div class="expense-row"><span>Эквайринг</span><span class="eb-acquiring">—</span></div>
+      <div class="expense-row"><span>Бонус/компенсация Ozon</span><span class="eb-bonus">—</span></div>
+      <div class="expense-row"><span>Налог${p.tax_pct ? ` (${p.tax_pct}%)` : ''}</span><span class="eb-tax">—</span></div>
+    </div>
     <div class="price-profit-row">
       <span class="pp-label">Прибыль со штуки</span>
       <span class="pp-value profit-out">—</span>
@@ -1218,27 +1228,38 @@ function bindPriceCard(card) {
   const commissionPct = parseFloat(card.dataset.commission) || 0;
   const logisticsEstimate = parseFloat(card.dataset.logistics) || 0;
   const taxPct = parseFloat(card.dataset.tax) || 0;
+  const acquiring = parseFloat(card.dataset.acquiring) || 0;
+  const bonus = parseFloat(card.dataset.bonus) || 0;
   const oldPriceOriginal = parseFloat(card.dataset.oldPrice) || 0;
   const priceInput = card.querySelector('.price-input');
   const cogsInput = card.querySelector('.cogs-price-input');
-  const expenseOut = card.querySelector('.expense-out');
   const profitOut = card.querySelector('.profit-out');
   const suggestOut = card.querySelector('.suggest-out');
   const saveBtn = card.querySelector('.price-save-btn');
+  const ebCommission = card.querySelector('.eb-commission');
+  const ebLogistics = card.querySelector('.eb-logistics');
+  const ebAcquiring = card.querySelector('.eb-acquiring');
+  const ebBonus = card.querySelector('.eb-bonus');
+  const ebTax = card.querySelector('.eb-tax');
 
   function recalc() {
     const price = parseFloat(priceInput.value) || 0;
     const cogs = parseFloat(cogsInput.value) || 0;
-    const { expensePerUnit, tax, profit } = computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct);
-    expenseOut.textContent = `расход/шт. ${fmtMoney(expensePerUnit)}${tax ? ` + налог ${fmtMoney(tax)}` : ''}`;
-    profitOut.textContent = fmtMoney(profit);
-    profitOut.classList.toggle('neg', profit < 0);
-    profitOut.classList.toggle('pos', profit >= 0);
+    const row = computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus);
+    ebCommission.textContent = '−' + fmtMoney(row.commission);
+    ebLogistics.textContent = '−' + fmtMoney(row.logistics);
+    ebAcquiring.textContent = '−' + fmtMoney(row.acquiring);
+    ebBonus.textContent = '+' + fmtMoney(row.bonus);
+    ebTax.textContent = '−' + fmtMoney(row.tax);
+    profitOut.textContent = fmtMoney(row.profit);
+    profitOut.classList.toggle('neg', row.profit < 0);
+    profitOut.classList.toggle('pos', row.profit >= 0);
+    const profit = row.profit;
 
     if (profit < 0) {
-      const suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 15, taxPct);
+      const suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 15, taxPct, acquiring, bonus);
       if (suggested && suggested > price) {
-        const { profit: newProfit } = computePriceRow(suggested, cogs, commissionPct, logisticsEstimate, taxPct);
+        const { profit: newProfit } = computePriceRow(suggested, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus);
         suggestOut.innerHTML = `Чтобы выйти в плюс: цена от <b>${fmtMoney(suggested)}</b> (прибыль ${fmtMoney(newProfit)})`;
       } else {
         suggestOut.textContent = '';
@@ -1379,14 +1400,27 @@ function renderStock(items) {
   const el = document.getElementById('content');
   el.innerHTML = `
     <input class="search-box" id="stockSearch" placeholder="Поиск по названию или артикулу…">
+    <div class="date-range" style="align-items:center">
+      <div class="field" style="flex:1">
+        <label>Фильтр</label>
+        <select id="stockFilter" class="cabinet-select" style="padding:8px 10px">
+          <option value="all">Все товары</option>
+          <option value="urgent">Срочно поставить (риск аутстока)</option>
+          <option value="none">Без остатка</option>
+        </select>
+      </div>
+    </div>
     <div class="notice" style="margin-bottom:2px">Продажи за последние 30 дней · рекомендация — досыпать до запаса на 30 дней вперёд</div>
     <div class="product-list" id="stockList"></div>
   `;
   const searchEl = document.getElementById('stockSearch');
+  const filterEl = document.getElementById('stockFilter');
 
   const renderList = () => {
     const q = searchEl.value.trim().toLowerCase();
     let list = q ? items.filter(i => (i.name || '').toLowerCase().includes(q) || (i.offer_id || '').toLowerCase().includes(q)) : items.slice();
+    if (filterEl.value === 'urgent') list = list.filter(i => i.daysLeft !== null && i.daysLeft < 14);
+    else if (filterEl.value === 'none') list = list.filter(i => (i.totalStock || 0) === 0);
     // Товары, которым реально грозит аутсток — первыми; без продаж — в конец.
     list.sort((a, b) => {
       const aLeft = a.daysLeft === null ? Infinity : a.daysLeft;
@@ -1399,6 +1433,7 @@ function renderStock(items) {
   };
   renderList();
   searchEl.addEventListener('input', renderList);
+  filterEl.addEventListener('change', renderList);
 }
 
 function stockCardHtml(p) {
@@ -1714,7 +1749,8 @@ function candidateCardHtml(p) {
   const hasCogs = !!p.has_cost_price;
   const canEvaluate = hasInfo && hasCogs;
   return `<div class="price-card product-card" data-item="${p.offer_id}" data-pid="${p.product_id}" data-has-info="${canEvaluate ? '1' : '0'}"
-      data-cogs="${p.cogs_unit}" data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-tax="${p.tax_pct || 0}">
+      data-cogs="${p.cogs_unit}" data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-tax="${p.tax_pct || 0}"
+      data-acquiring="${p.acquiring || 0}" data-bonus="${p.bonus || 0}">
     <div class="p-name">${p.name}</div>
     <div class="p-offer copy-chip" data-copy="${p.offer_id || p.product_id}">${p.offer_id || p.product_id}</div>
     ${hasInfo && !hasCogs ? `<div class="cogs-row">
@@ -1749,7 +1785,9 @@ function recalcCandProfit(card) {
   const commission = parseFloat(card.dataset.commission) || 0;
   const logistics = parseFloat(card.dataset.logistics) || 0;
   const tax = parseFloat(card.dataset.tax) || 0;
-  const profit = price - cogs - (price * (commission / 100) + logistics) - price * (tax / 100);
+  const acquiring = parseFloat(card.dataset.acquiring) || 0;
+  const bonus = parseFloat(card.dataset.bonus) || 0;
+  const profit = price - cogs - (price * (commission / 100) + logistics + acquiring) - price * (tax / 100) + bonus;
   out.textContent = fmtMoney(profit);
   out.classList.toggle('neg', profit < 0);
   out.classList.toggle('pos', profit >= 0);

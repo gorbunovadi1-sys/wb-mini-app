@@ -18,12 +18,12 @@ def list_actions(client) -> list:
     ]
 
 
-def _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct=0):
+def _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct=0, acquiring=0, bonus=0):
     if not price:
         return None
-    expense = price * (commission_pct / 100) + logistics_estimate
+    expense = price * (commission_pct / 100) + logistics_estimate + (acquiring or 0)
     tax = price * (tax_pct / 100)
-    return round(price - cogs_unit - expense - tax, 2)
+    return round(price - cogs_unit - expense - tax + (bonus or 0), 2)
 
 
 def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
@@ -45,6 +45,8 @@ def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
         commission_pct = info.get("commission_pct", 0) if info else 0
         logistics_estimate = info.get("logistics_estimate", 0) if info else 0
         tax_pct = info.get("tax_pct", 0) if info else 0
+        acquiring = info.get("acquiring", 0) if info else 0
+        bonus = info.get("bonus", 0) if info else 0
         has_cost_price = offer_id in cost_prices
         rate_source = info.get("rate_source", "estimate") if info else "estimate"
         return {
@@ -59,6 +61,8 @@ def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
             "commission_pct": commission_pct,
             "logistics_estimate": logistics_estimate,
             "tax_pct": tax_pct,
+            "acquiring": acquiring,
+            "bonus": bonus,
             "has_cost_price": has_cost_price,
             "rate_source": rate_source,
             # None (not 0) when we couldn't match this product to our price/
@@ -67,7 +71,7 @@ def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
             # would look like a real number while actually excluding the
             # cost of the item entirely, which is actively misleading rather
             # than just imprecise.
-            "profit": _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct) if (info and has_cost_price) else None,
+            "profit": _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct, acquiring, bonus) if (info and has_cost_price) else None,
         }
 
     in_action = [_enrich(p, "action_price") for p in client.get_action_products(action_id)]
