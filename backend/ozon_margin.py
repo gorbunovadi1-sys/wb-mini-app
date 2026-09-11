@@ -95,14 +95,25 @@ def _fetch_accrual_for_day(client, date_str: str):
     delivery.total_accrued triple reconciles exactly to what Ozon actually
     paid out, verified live) plus per-SKU other item-level fees (ITEM
     category) and account-wide fees not tied to any one product (NON_ITEM).
-    Returns ({sku: {commission, delivery, item_fees}}, non_item_total). Keys
-    are always str(sku) — this dict gets cached through a Postgres JSON
+    Returns ({sku: {commission, delivery, item_fees, bonus}}, non_item_total).
+    Keys are always str(sku) — this dict gets cached through a Postgres JSON
     column, which silently turns int keys into strings on the way back out,
     so keeping them as ints here would make every cached lookup miss (which
     is exactly what happened: commission/delivery/item_fees all silently
     read as 0 for any cache-served period, since sku_to_offer's int keys
-    never matched this dict's post-round-trip string keys)."""
-    per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0})
+    never matched this dict's post-round-trip string keys).
+
+    `bonus` (commission.bonus + commission.coinvestment) is a real credit
+    Ozon pays the seller — confirmed against Ozon's own official "Отчёт по
+    начислениям" export, where the matching line is "Продажи → Баллы за
+    скидки": it's booked under Продажи (sales/revenue), NOT under
+    Вознаграждение Ozon (commission). An earlier version of this function
+    netted it into `commission` instead, which was wrong on two counts: it
+    hid the seller's real, expected commission rate behind a misleadingly
+    small number, and miscategorized a revenue-side credit as a
+    commission-side one. Keep it separate; callers should add it to revenue
+    (or otherwise credit it independently), not subtract it from commission."""
+    per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
     non_item_total = 0.0
     try:
         accruals = client.get_accrual_by_day(date_str)
@@ -119,19 +130,8 @@ def _fetch_accrual_for_day(client, date_str: str):
                 sku = str(sku)
                 commission = prod.get("commission") or {}
                 delivery = prod.get("delivery") or {}
-                # commission.bonus/coinvestment are real credits Ozon pays
-                # back to the seller — verified against a real seller's own
-                # "Свод по артикулам" export: for items enrolled in Ozon's
-                # own discount-funding programs, bonus alone offset 60-80%
-                # of the raw commission deduction (one SKU: −388,639 raw
-                # commission vs +365,301 in bonus/other-accrual credits, netting
-                # to a much smaller real cost). Reading only "commission"
-                # and ignoring these two silently overstated the true
-                # commission cost by that entire credited amount.
-                commission_amount = _accrual_amount(commission, "commission", "amount")
-                bonus = _accrual_amount(commission, "bonus", "amount")
-                coinvestment = _accrual_amount(commission, "coinvestment", "amount")
-                per_sku[sku]["commission"] += commission_amount + bonus + coinvestment
+                per_sku[sku]["commission"] += _accrual_amount(commission, "commission", "amount")
+                per_sku[sku]["bonus"] += _accrual_amount(commission, "bonus", "amount") + _accrual_amount(commission, "coinvestment", "amount")
                 per_sku[sku]["delivery"] += _accrual_amount(delivery, "total_accrued", "amount")
         elif cat == "ITEM":
             for fee_group in ((a.get("item_fees") or {}).get("fees") or []):
@@ -147,9 +147,9 @@ def _fetch_accrual_for_day(client, date_str: str):
 
 
 def _fetch_accrual_breakdown(client, date_from: datetime.date, date_to: datetime.date):
-    """Real per-SKU commission/delivery/fees summed over a date range — one
-    call per day, used for the live (uncached) path."""
-    per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0})
+    """Real per-SKU commission/delivery/fees/bonus summed over a date range —
+    one call per day, used for the live (uncached) path."""
+    per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
     non_item_total = 0.0
     d = date_from
     while d <= date_to:
@@ -158,6 +158,7 @@ def _fetch_accrual_breakdown(client, date_from: datetime.date, date_to: datetime
             per_sku[sku]["commission"] += vals["commission"]
             per_sku[sku]["delivery"] += vals["delivery"]
             per_sku[sku]["item_fees"] += vals["item_fees"]
+            per_sku[sku]["bonus"] += vals["bonus"]
         non_item_total += day_non_item
         d += datetime.timedelta(days=1)
         time.sleep(0.05)
@@ -181,7 +182,7 @@ def fetch_accrual_by_date(client, date_from: datetime.date, date_to: datetime.da
 
 
 def _slice_accrual_by_date(accrual_by_date: dict, non_item_by_date: dict, date_from: datetime.date, date_to: datetime.date):
-    per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0})
+    per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
     non_item_total = 0.0
     d = date_from
     while d <= date_to:
@@ -190,6 +191,7 @@ def _slice_accrual_by_date(accrual_by_date: dict, non_item_by_date: dict, date_f
             per_sku[sku]["commission"] += vals["commission"]
             per_sku[sku]["delivery"] += vals["delivery"]
             per_sku[sku]["item_fees"] += vals["item_fees"]
+            per_sku[sku]["bonus"] += vals.get("bonus", 0.0)
         non_item_total += non_item_by_date.get(key, 0.0)
         d += datetime.timedelta(days=1)
     return per_sku, non_item_total
@@ -287,7 +289,7 @@ def build_margin_summary(
 
     # Roll per-SKU accrual up to per-offer (an offer normally maps to one SKU;
     # in the rare case Ozon assigns more than one, all are summed together).
-    per_offer_accrual = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0})
+    per_offer_accrual = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
     for sku, offer_id in sku_to_offer.items():
         a = per_sku_accrual.get(str(sku))
         if not a:
@@ -296,6 +298,7 @@ def build_margin_summary(
         oa["commission"] += a["commission"]
         oa["delivery"] += a["delivery"]
         oa["item_fees"] += a["item_fees"]
+        oa["bonus"] += a.get("bonus", 0.0)
 
     daily_series = [
         {"date": d, "revenue": round(v["revenue"], 2), "qty": v["qty"]}
@@ -307,21 +310,23 @@ def build_margin_summary(
 
     products = []
     for offer_id, p in per_offer_buyouts.items():
-        accrual = per_offer_accrual.get(offer_id, {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0})
-        # Ozon reports these as negative (they're deductions) — normally.
-        # accrual["commission"] now also nets in bonus/coinvestment credits
-        # (see _fetch_accrual_for_day), which can in principle outweigh the
-        # raw commission deduction for a heavily-subsidized item, flipping
-        # it positive (a net rebate). Negate rather than abs() so that case
-        # still nets correctly into profit instead of being miscounted as
-        # an extra cost.
-        commission = -accrual["commission"]
-        delivery = -accrual["delivery"]
-        item_fees = -accrual["item_fees"]
+        accrual = per_offer_accrual.get(offer_id, {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
+        # Ozon reports these as negative (they're deductions); store as
+        # positive cost magnitudes for display, subtract explicitly below.
+        # `bonus` (commission.bonus + coinvestment — Ozon's own "Баллы за
+        # скидки" line, confirmed against the seller's official "Отчёт по
+        # начислениям") is a real credit booked under Продажи (sales), not
+        # under Вознаграждение Ozon (commission) — kept separate here rather
+        # than netted into commission, so the displayed commission still
+        # reflects the seller's real, expected rate (not artificially small).
+        commission = abs(accrual["commission"])
+        delivery = abs(accrual["delivery"])
+        item_fees = abs(accrual["item_fees"])
+        bonus = accrual["bonus"]
         cogs_unit = cost_prices.get(offer_id, 0)
         cogs_total = cogs_unit * p["qty"]
         tax = p["revenue"] * (tax_pct / 100)
-        profit = p["revenue"] - commission - delivery - item_fees - cogs_total - tax
+        profit = p["revenue"] + bonus - commission - delivery - item_fees - cogs_total - tax
         margin_pct = (profit / p["revenue"] * 100) if p["revenue"] else 0.0
         products.append({
             "offer_id": offer_id,
@@ -331,6 +336,7 @@ def build_margin_summary(
             "commission": round(commission, 2),
             "delivery": round(delivery, 2),
             "item_fees": round(item_fees, 2),
+            "bonus": round(bonus, 2),
             "cogs_unit": cogs_unit,
             "cogs_total": round(cogs_total, 2),
             "tax": round(tax, 2),
@@ -344,12 +350,16 @@ def build_margin_summary(
     total_commission = sum(pr["commission"] for pr in products)
     total_delivery = sum(pr["delivery"] for pr in products)
     total_item_fees = sum(pr["item_fees"] for pr in products)
+    total_bonus = sum(pr["bonus"] for pr in products)
     total_cogs = sum(pr["cogs_total"] for pr in products)
     total_tax = sum(pr["tax"] for pr in products)
     # "К перечислению" — what Ozon actually pays out for the buyouts, before
     # the seller's OWN costs (cogs, tax) are taken out of that. Everything
-    # subtracted here is money Ozon itself keeps, not the seller's expense.
-    total_payout_real = total_revenue - total_commission - total_delivery - total_item_fees - other_fees_cost
+    # subtracted here is money Ozon itself keeps, not the seller's expense;
+    # bonus is added back since it's a real credit Ozon pays the seller
+    # (Продажи → Баллы за скидки in Ozon's own report), not part of what it
+    # keeps.
+    total_payout_real = total_revenue + total_bonus - total_commission - total_delivery - total_item_fees - other_fees_cost
     total_profit = total_payout_real - total_cogs - total_tax
     total_margin_pct = (total_profit / total_revenue * 100) if total_revenue else 0.0
 
@@ -374,6 +384,7 @@ def build_margin_summary(
         "account": {
             "revenue": round(total_revenue, 2),
             "commission": round(total_commission, 2),
+            "bonus": round(total_bonus, 2),
             "delivery": round(total_delivery, 2),
             "item_fees": round(total_item_fees, 2),
             "other_fees": round(other_fees_cost, 2),
