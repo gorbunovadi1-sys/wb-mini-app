@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -370,6 +371,76 @@ def debug_ozon_accrual_postings(cabinet_id: int, telegram_id: int, date_from: st
         "posting_accruals_count": len(posting_accruals),
         "type_ids_seen": sorted(t for t in all_type_ids if t is not None),
         "sample": posting_accruals[:3],
+    }
+
+
+@app.get("/api/_debug/ozon-accrual-full-scan/{cabinet_id}")
+def debug_ozon_accrual_full_scan(cabinet_id: int, telegram_id: int, date_from: str, date_to: str):
+    """TEMPORARY — scan every day in [date_from, date_to] via accrual/by-day
+    and tally every distinct fee-type identifier actually seen in NON_ITEM
+    and ITEM entries (walking their raw JSON, since earlier sampling only
+    ever saw one NON_ITEM type per short window — this checks whether a full
+    month surfaces Disposal/Compensation/Marketing/Promotion/etc., now that
+    accrual/types confirms those are real, valid type_ids Ozon can emit).
+    Remove after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet, ozon_max_retries=3)
+    import datetime as _dt
+    d = _dt.date.fromisoformat(date_from)
+    end = _dt.date.fromisoformat(date_to)
+    categories_seen = collections.Counter()
+    non_item_types = collections.Counter()
+    non_item_amounts = collections.defaultdict(float)
+    item_fee_names = collections.Counter()
+    item_fee_amounts = collections.defaultdict(float)
+    sample_non_item_raw = None
+    sample_item_raw = None
+    days_checked = 0
+    while d <= end:
+        try:
+            accruals = client.get_accrual_by_day(d.isoformat())
+        except Exception as e:
+            accruals = []
+        days_checked += 1
+        for a in accruals:
+            cat = a.get("accrued_category")
+            categories_seen[cat] += 1
+            if cat == "NON_ITEM":
+                nif = a.get("non_item_fee") or {}
+                if sample_non_item_raw is None:
+                    sample_non_item_raw = a
+                key = nif.get("name") or nif.get("type") or nif.get("type_id") or "?"
+                non_item_types[str(key)] += 1
+                amt = (nif.get("accrued") or {}).get("amount")
+                try:
+                    non_item_amounts[str(key)] += float(amt or 0)
+                except (TypeError, ValueError):
+                    pass
+            elif cat == "ITEM":
+                for fee_group in ((a.get("item_fees") or {}).get("fees") or []):
+                    for fee in (fee_group.get("fees") or []):
+                        if sample_item_raw is None:
+                            sample_item_raw = fee
+                        key = fee.get("name") or fee.get("type") or fee.get("type_id") or "?"
+                        item_fee_names[str(key)] += 1
+                        amt = (fee.get("accrued") or {}).get("amount")
+                        try:
+                            item_fee_amounts[str(key)] += float(amt or 0)
+                        except (TypeError, ValueError):
+                            pass
+    return {
+        "days_checked": days_checked,
+        "categories_seen": dict(categories_seen),
+        "non_item_types_seen": dict(non_item_types),
+        "non_item_amounts": dict(non_item_amounts),
+        "item_fee_names_seen": dict(item_fee_names),
+        "item_fee_amounts": dict(item_fee_amounts),
+        "sample_non_item_raw": sample_non_item_raw,
+        "sample_item_raw": sample_item_raw,
     }
 
 
