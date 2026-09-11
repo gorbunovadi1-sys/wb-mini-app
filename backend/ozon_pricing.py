@@ -1,18 +1,25 @@
 from . import cabinets, ozon_margin, ozon_sales_cache
 
 
-def _real_rates_by_offer(cabinet_id: int) -> dict:
+def _real_rates_by_offer(cabinet_id: int):
     """Real per-offer commission % and logistics-per-unit, derived from the
     same cached accrual data Дашборд/Детализация use — an actual weighted
     average of what this product really sold through recently, whatever mix
     of FBO/FBS that was. Far more accurate than the static estimate below,
     which only ever reads FBS-specific rate fields regardless of how the
-    product actually ships. Returns {} if there's no cache yet for this
+    product actually ships. Returns ({}, 0) if there's no cache yet for this
     cabinet — callers fall back to the estimate; this never makes a live
-    Ozon call on its own, so it's safe to call on every pricing/promo load."""
+    Ozon call on its own, so it's safe to call on every pricing/promo load.
+
+    Also returns shop_avg_acquiring — acquiring has no static "reference
+    rate" field in Ozon's own commissions object (unlike commission %/
+    logistics, which Ozon quotes per category even for an unsold item), so
+    a product with no sales history has nothing to estimate it from. Using
+    the cabinet-wide average (total acquiring ÷ total units, across
+    everything with real data) is a far better guess than 0 for that case."""
     cached = ozon_sales_cache.get(cabinet_id)
     if not cached:
-        return {}
+        return {}, 0
     cpostings, caccrual, cnonitem, ccover_from, _is_stale = cached
     try:
         result = ozon_margin.build_margin_summary(
@@ -21,11 +28,14 @@ def _real_rates_by_offer(cabinet_id: int) -> dict:
             cached_non_item_by_date=cnonitem, cache_cover_from=ccover_from,
         )
     except Exception:
-        return {}
+        return {}, 0
     rates = {}
+    total_acquiring, total_qty = 0.0, 0
     for p in result.get("products", []):
         if not p.get("qty") or not p.get("revenue"):
             continue
+        total_acquiring += p["item_fees"]
+        total_qty += p["qty"]
         rates[p["offer_id"]] = {
             "commission_pct": round(p["commission"] / p["revenue"] * 100, 2),
             "logistics_per_unit": round(p["delivery"] / p["qty"], 2),
@@ -37,7 +47,8 @@ def _real_rates_by_offer(cabinet_id: int) -> dict:
             "acquiring_per_unit": round(p["item_fees"] / p["qty"], 2),
             "bonus_per_unit": round(p["bonus"] / p["qty"], 2),
         }
-    return rates
+    shop_avg_acquiring = round(total_acquiring / total_qty, 2) if total_qty else 0
+    return rates, shop_avg_acquiring
 
 
 def _estimate_rate(commissions: dict, fulfillment: str):
@@ -80,7 +91,7 @@ def get_pricing_list(client, cabinet_id: int) -> list:
     cost_prices = cabinets.get_cost_prices(cabinet_id)
     stocks = client.get_all_stocks()
     tax_pct = cabinets.get_cabinet_settings(cabinet_id).get("tax_pct", 0)
-    real_rates = _real_rates_by_offer(cabinet_id)
+    real_rates, shop_avg_acquiring = _real_rates_by_offer(cabinet_id)
 
     items = []
     for p in prices:
@@ -102,12 +113,12 @@ def get_pricing_list(client, cabinet_id: int) -> list:
             # product's stock is actually sitting in (defaults to FBS when
             # there's no stock either way, since that's this app's most
             # common setup, but a client whose catalog is FBO gets FBO rates
-            # automatically, no manual switch needed). Acquiring/bonus have
-            # no equivalent "reference rate" field to estimate from — both
-            # are 0 until this offer has real sales history.
+            # automatically, no manual switch needed). Acquiring has no
+            # equivalent "reference rate" field to estimate from — use the
+            # cabinet-wide average instead of 0, a much better guess.
             fulfillment = "fbo" if stock["fbo"] > stock["fbs"] else "fbs"
             sales_pct, logistics_estimate = _estimate_rate(commissions, fulfillment)
-            acquiring = 0
+            acquiring = shop_avg_acquiring
             bonus = 0
             rate_source = "estimate"
 
