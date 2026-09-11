@@ -6,10 +6,10 @@ from .ozon_client import OzonClient
 log = logging.getLogger("ozon_promo_guard")
 
 
-def _profit_and_margin_at_price(price, cogs_unit, commission_pct, logistics_estimate, tax_pct=0):
-    expense = price * (commission_pct / 100) + logistics_estimate
+def _profit_and_margin_at_price(price, cogs_unit, commission_pct, logistics_estimate, tax_pct=0, acquiring=0, bonus=0):
+    expense = price * (commission_pct / 100) + logistics_estimate + (acquiring or 0)
     tax = price * (tax_pct / 100)
-    profit = price - cogs_unit - expense - tax
+    profit = price - cogs_unit - expense - tax + (bonus or 0)
     margin_pct = (profit / price * 100) if price else 0
     return profit, margin_pct
 
@@ -70,6 +70,7 @@ def check_and_clean_cabinet(cabinet: dict) -> dict:
                 continue
             profit, margin_pct = _profit_and_margin_at_price(
                 action_price, info["cogs_unit"], info["commission_pct"], info["logistics_estimate"], info.get("tax_pct", 0),
+                info.get("acquiring", 0), info.get("bonus", 0),
             )
             if margin_pct < min_margin_pct:
                 to_remove_by_action.setdefault(action_id, []).append({
