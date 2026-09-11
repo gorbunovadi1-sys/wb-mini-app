@@ -326,6 +326,22 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
     raise ValueError(f"unknown marketplace {cabinet['marketplace']}")
 
 
+@app.post("/api/_debug/force-refresh-cache/{cabinet_id}")
+def debug_force_refresh_cache(cabinet_id: int, telegram_id: int):
+    """TEMPORARY — the bonus/coinvestment fix needs a fresh cache rebuild to
+    take effect; the normal skip-if-recently-refreshed startup logic would
+    otherwise keep serving the stale (pre-fix) cached numbers for up to 30
+    more minutes. Remove after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet, ozon_max_retries=3)
+    ozon_sales_cache.refresh(client, cabinet_id)
+    return {"status": "refreshed"}
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
