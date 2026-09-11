@@ -269,6 +269,23 @@ class OzonClient:
         instead of a generic "Ozon"."""
         return self._post("/v1/seller/info", {})
 
+    def get_warehouses(self):
+        """POST /v1/warehouse/list — this seller's own warehouses (FBS/rFBS).
+        Needed to resolve a warehouse_id for update_stocks — Ozon requires one
+        per line, there's no "just use the default" shortcut."""
+        return self._post("/v1/warehouse/list", {}).get("result", [])
+
+    def update_stocks(self, items):
+        """POST /v2/products/stocks — sets FBS stock quantity. `items`:
+        [{"offer_id": str, "stock": int, "warehouse_id": int}], up to 100 per
+        call. Returns Ozon's per-item result (each with updated/errors)."""
+        results = []
+        for i in range(0, len(items), 100):
+            chunk = items[i:i + 100]
+            data = self._post("/v2/products/stocks", {"stocks": chunk})
+            results.extend(data.get("result", []))
+        return results
+
 
 # Backward-compat default client for the original single-shop dashboard, built
 # from the process-wide env vars. New (multi-tenant) code should construct its

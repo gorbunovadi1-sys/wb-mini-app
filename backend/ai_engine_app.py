@@ -23,6 +23,7 @@ from . import ozon_promo_guard
 from . import ozon_promotions
 from . import ozon_promotions_detail
 from . import ozon_sales_cache
+from . import ozon_stock
 from . import wb_ads
 from . import wb_prices
 from . import wb_sales_cache
@@ -462,6 +463,28 @@ def get_cabinet_ozon_pricing(
         raise HTTPException(status_code=400, detail="not an Ozon cabinet")
     client = _build_client(cabinet)
     return {"items": ozon_pricing.get_pricing_list(client, cabinet_id)}
+
+
+@app.post("/api/cabinets/{cabinet_id}/ozon/stocks")
+def set_cabinet_ozon_stocks(
+    cabinet_id: int,
+    body: dict,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+):
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
+    if cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet)
+    updates = body.get("updates", [])
+    if not updates:
+        raise HTTPException(status_code=400, detail="updates list is empty")
+    try:
+        result = ozon_stock.update_fbs_stock(client, updates)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "done", "result": result}
 
 
 @app.get("/api/cabinets/{cabinet_id}/wb/pricing")

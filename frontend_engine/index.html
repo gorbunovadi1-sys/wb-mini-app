@@ -162,6 +162,9 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
   font-weight: 600; padding: 4px 0; cursor: pointer;
 }
 
+.in-action-select-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.in-action-select-row input { width: 16px; height: 16px; flex: none; }
+.in-action-select-row label { font-size: 12px; color: var(--text-secondary); }
 .cogs-row { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 .cogs-row label { font-size: 10.5px; color: var(--text-secondary); flex: none; }
 .cogs-row input {
@@ -616,7 +619,9 @@ function productCardHtml(p, maxAbsProfit) {
 
 function bindCogsHandlers(root, onSaved) {
   root.querySelectorAll('.product-card').forEach(card => {
-    card.querySelector('.cogs-save').addEventListener('click', async () => {
+    const saveBtn = card.querySelector('.cogs-save');
+    if (!saveBtn) return; // this card has no cogs-row (e.g. cost price already known)
+    saveBtn.addEventListener('click', async () => {
       const btn = card.querySelector('.cogs-save');
       const input = card.querySelector('.cogs-input');
       const itemKey = card.dataset.item;
@@ -991,16 +996,33 @@ function renderPricing(items) {
         <label style="margin:0" for="pricingOnlyNeg">Только убыточные</label>
       </div>
     </div>
+    <div class="date-range" style="align-items:center">
+      <div class="field" style="flex:1">
+        <label>Остаток</label>
+        <select id="pricingStockFilter" class="cabinet-select" style="padding:8px 10px">
+          <option value="all">Все товары</option>
+          <option value="with">С остатком</option>
+          <option value="without">Без остатка</option>
+        </select>
+      </div>
+    </div>
     <div class="product-list" id="pricingList"></div>
   `;
   const searchEl = document.getElementById('pricingSearch');
   const sortEl = document.getElementById('pricingSort');
   const onlyNegEl = document.getElementById('pricingOnlyNeg');
+  const stockFilterEl = document.getElementById('pricingStockFilter');
 
   const renderList = () => {
     const q = searchEl.value.trim().toLowerCase();
     let list = q ? items.filter(i => (i.name||'').toLowerCase().includes(q) || (i.offer_id||'').toLowerCase().includes(q)) : items.slice();
     if (onlyNegEl.checked) list = list.filter(i => i.currentProfit < 0);
+    if (stockFilterEl.value !== 'all') {
+      list = list.filter(i => {
+        const hasStock = ((i.fbo_stock || 0) + (i.fbs_stock || 0)) > 0;
+        return stockFilterEl.value === 'with' ? hasStock : !hasStock;
+      });
+    }
     if (sortEl.value === 'asc') list = [...list].sort((a, b) => a.currentProfit - b.currentProfit);
     else if (sortEl.value === 'desc') list = [...list].sort((a, b) => b.currentProfit - a.currentProfit);
 
@@ -1012,6 +1034,7 @@ function renderPricing(items) {
   searchEl.addEventListener('input', renderList);
   sortEl.addEventListener('change', renderList);
   onlyNegEl.addEventListener('change', renderList);
+  stockFilterEl.addEventListener('change', renderList);
 }
 
 function priceCardHtml(p) {
@@ -1229,6 +1252,7 @@ function renderStock(items) {
     });
     document.getElementById('stockList').innerHTML = list.slice(0, 300).map(stockCardHtml).join('')
       || '<div class="state-msg">Ничего не найдено</div>';
+    bindStockHandlers(document.getElementById('stockList'), () => { stockItems = null; loadStock(); });
   };
   renderList();
   searchEl.addEventListener('input', renderList);
@@ -1239,7 +1263,7 @@ function stockCardHtml(p) {
   const daysLeftText = p.daysLeft === null
     ? (p.totalStock > 0 ? 'нет продаж' : 'нет остатка')
     : `≈${Math.floor(p.daysLeft)} дн.`;
-  return `<div class="price-card">
+  return `<div class="price-card" data-offer="${p.offer_id}">
     <div class="p-name">${p.name}</div>
     <div class="p-offer copy-chip" data-copy="${p.offer_id}">${p.offer_id}</div>
     <div class="price-summary">
@@ -1254,7 +1278,38 @@ function stockCardHtml(p) {
       <span class="pp-value ${urgent ? 'neg' : 'pos'}">${daysLeftText}</span>
     </div>
     ${p.recommendedRestock > 0 ? `<div class="price-suggest">Рекомендую поставить ещё <b>${fmtNum(p.recommendedRestock)} шт.</b></div>` : ''}
+    <div class="cogs-row">
+      <label>Новый остаток FBS</label>
+      <input type="number" class="fbs-stock-input" value="${p.fbs_stock || 0}" placeholder="0" min="0">
+      <button class="cogs-save fbs-stock-save">Сохранить</button>
+    </div>
   </div>`;
+}
+
+function bindStockHandlers(root, onSaved) {
+  root.querySelectorAll('.price-card').forEach(card => {
+    const saveBtn = card.querySelector('.fbs-stock-save');
+    if (!saveBtn) return;
+    saveBtn.addEventListener('click', async () => {
+      const offerId = card.dataset.offer;
+      const input = card.querySelector('.fbs-stock-input');
+      const value = parseInt(input.value, 10);
+      if (isNaN(value) || value < 0) { alert('Укажи остаток FBS — целое число от 0'); return; }
+      saveBtn.disabled = true; saveBtn.textContent = 'Сохранение…';
+      try {
+        await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/stocks`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ updates: [{ offer_id: offerId, stock: value }] }),
+        });
+        saveBtn.textContent = 'Сохранено ✓'; saveBtn.classList.add('saved');
+        setTimeout(onSaved, 900);
+      } catch (e) {
+        saveBtn.textContent = 'Ошибка'; saveBtn.disabled = false;
+        alert('Не удалось сохранить остаток: ' + e.message);
+      }
+    });
+  });
 }
 
 let wbStockItems = null;
@@ -1399,6 +1454,10 @@ function renderActionDetail(title, data) {
     <div class="card"><h3>${title}</h3></div>
     <div class="notice" style="margin-bottom:2px">В акции: ${data.in_action.length} товар(ов)</div>
     <input class="search-box" id="inActionSearch" placeholder="Поиск в товарах акции…">
+    <div class="date-range" style="align-items:center;gap:8px">
+      <button id="inActionSelectAll" class="price-save-btn" style="flex:none;padding:8px 14px">Выбрать все</button>
+      <button id="inActionRemoveSelected" class="price-save-btn" style="flex:none;padding:8px 14px" disabled>Убрать выбранные (0)</button>
+    </div>
     <div class="product-list" id="inActionList"></div>
     <div class="card" style="margin-top:4px"><h3>Добавить товар в акцию</h3></div>
     <input class="search-box" id="candidatesSearch" placeholder="Поиск среди доступных товаров… (${data.candidates.length})">
@@ -1406,15 +1465,56 @@ function renderActionDetail(title, data) {
   `;
   document.getElementById('actionsBackBtn').addEventListener('click', renderActionsList);
 
+  const reload = () => openActionDetail(activeActionId, title);
+
   const inSearchEl = document.getElementById('inActionSearch');
+  const selectAllBtn = document.getElementById('inActionSelectAll');
+  const removeSelectedBtn = document.getElementById('inActionRemoveSelected');
+
+  const updateSelectionCount = () => {
+    const n = document.querySelectorAll('#inActionList .in-action-check:checked').length;
+    removeSelectedBtn.textContent = `Убрать выбранные (${n})`;
+    removeSelectedBtn.disabled = n === 0;
+  };
+
   const renderIn = () => {
     const q = inSearchEl.value.trim().toLowerCase();
     const list = q ? data.in_action.filter(p => (p.name || '').toLowerCase().includes(q) || (p.offer_id || '').toLowerCase().includes(q)) : data.in_action;
     document.getElementById('inActionList').innerHTML = list.slice(0, 200).map(inActionCardHtml).join('') || '<div class="state-msg">Пусто</div>';
     document.querySelectorAll('#inActionList .action-remove-btn').forEach(btn => btn.addEventListener('click', onRemoveClick));
+    document.querySelectorAll('#inActionList .in-action-check').forEach(cb => cb.addEventListener('change', updateSelectionCount));
+    bindCogsHandlers(document.getElementById('inActionList'), reload);
+    updateSelectionCount();
   };
   renderIn();
   inSearchEl.addEventListener('input', renderIn);
+
+  selectAllBtn.addEventListener('click', () => {
+    const boxes = document.querySelectorAll('#inActionList .in-action-check');
+    const allChecked = [...boxes].every(cb => cb.checked);
+    boxes.forEach(cb => { cb.checked = !allChecked; });
+    updateSelectionCount();
+  });
+
+  removeSelectedBtn.addEventListener('click', async () => {
+    const pids = [...document.querySelectorAll('#inActionList .in-action-check:checked')].map(cb => parseInt(cb.dataset.pid, 10));
+    if (!pids.length) return;
+    if (!confirm(`Убрать ${pids.length} товар(ов) из акции?`)) return;
+    removeSelectedBtn.disabled = true;
+    removeSelectedBtn.textContent = 'Убираю…';
+    try {
+      await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/actions/${activeActionId}/remove`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ product_ids: pids }),
+      });
+      data.in_action = data.in_action.filter(p => !pids.includes(p.product_id));
+      renderIn();
+    } catch (err) {
+      alert('Не удалось убрать выбранные: ' + err.message);
+      updateSelectionCount();
+    }
+  });
 
   const candSearchEl = document.getElementById('candidatesSearch');
   const renderCand = () => {
@@ -1426,6 +1526,7 @@ function renderActionDetail(title, data) {
     document.querySelectorAll('#candidatesList .price-card').forEach(recalcCandProfit);
     document.querySelectorAll('#candidatesList .action-add-btn').forEach(btn => btn.addEventListener('click', onAddClick));
     document.querySelectorAll('#candidatesList .cand-price-input').forEach(inp => inp.addEventListener('input', (e) => recalcCandProfit(e.target.closest('.price-card'))));
+    bindCogsHandlers(document.getElementById('candidatesList'), reload);
   };
   renderCand();
   candSearchEl.addEventListener('input', renderCand);
@@ -1434,7 +1535,9 @@ function renderActionDetail(title, data) {
 function inActionCardHtml(p) {
   const profitKnown = p.profit !== null;
   const neg = profitKnown && p.profit < 0;
-  return `<div class="price-card">
+  const missingCogs = p.offer_id && !p.has_cost_price;
+  return `<div class="price-card product-card" data-item="${p.offer_id}" data-pid="${p.product_id}">
+    <div class="in-action-select-row"><input type="checkbox" class="in-action-check" data-pid="${p.product_id}"> <label>Выбрать</label></div>
     <div class="p-name">${p.name}</div>
     <div class="p-offer copy-chip" data-copy="${p.offer_id}">${p.offer_id}</div>
     <div class="price-summary">
@@ -1445,6 +1548,11 @@ function inActionCardHtml(p) {
       <span class="pp-label">Прибыль по акции</span>
       <span class="pp-value ${profitKnown ? (neg ? 'neg' : 'pos') : ''}">${profitKnown ? fmtMoney(p.profit) : 'нет данных'}</span>
     </div>
+    ${missingCogs ? `<div class="cogs-row">
+      <label>Закупка/шт.</label>
+      <input type="number" class="cogs-input" value="" placeholder="0">
+      <button class="cogs-save">Сохранить</button>
+    </div>` : ''}
     <div class="price-save-row"><button class="price-save-btn action-remove-btn" data-pid="${p.product_id}">Убрать из акции</button></div>
   </div>`;
 }
@@ -1454,25 +1562,35 @@ function candidateCardHtml(p) {
   // p.offer_id is only ever '' when the backend couldn't match this candidate
   // to our own price/commission data — computing a "profit" in that case would
   // silently use commission=0/logistics=0/cogs=0, i.e. show price itself as
-  // profit. Treat it as unknown instead, and don't offer to add it blind.
+  // profit. Same concern for cogs specifically: no cost price on file means
+  // cogs_unit defaults to 0, which would silently show price-as-profit even
+  // though the item isn't free. Both cases: treat profit as unknown and
+  // don't offer to add it blind.
   const hasInfo = !!p.offer_id;
-  return `<div class="price-card" data-pid="${p.product_id}" data-has-info="${hasInfo ? '1' : '0'}"
+  const hasCogs = !!p.has_cost_price;
+  const canEvaluate = hasInfo && hasCogs;
+  return `<div class="price-card product-card" data-item="${p.offer_id}" data-pid="${p.product_id}" data-has-info="${canEvaluate ? '1' : '0'}"
       data-cogs="${p.cogs_unit}" data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-tax="${p.tax_pct || 0}">
     <div class="p-name">${p.name}</div>
     <div class="p-offer copy-chip" data-copy="${p.offer_id || p.product_id}">${p.offer_id || p.product_id}</div>
+    ${hasInfo && !hasCogs ? `<div class="cogs-row">
+      <label>Закупка/шт.</label>
+      <input type="number" class="cogs-input" value="" placeholder="0">
+      <button class="cogs-save">Сохранить</button>
+    </div>` : ''}
     <div class="price-fields">
       <div class="price-field">
         <label>Цена по акции (макс. ${fmtMoney(p.max_action_price || 0)})</label>
-        <input type="number" class="cand-price-input" value="${suggested}" ${hasInfo ? '' : 'disabled'}>
+        <input type="number" class="cand-price-input" value="${suggested}" ${canEvaluate ? '' : 'disabled'}>
       </div>
     </div>
     <div class="price-profit-row">
       <span class="pp-label">Прибыль по этой цене</span>
-      <span class="pp-value cand-profit-out">${hasInfo ? '—' : 'нет данных'}</span>
+      <span class="pp-value cand-profit-out">${canEvaluate ? '—' : 'нет данных'}</span>
     </div>
-    ${hasInfo
+    ${canEvaluate
       ? `<div class="price-save-row"><button class="price-save-btn action-add-btn" data-pid="${p.product_id}">Добавить в акцию</button></div>`
-      : `<div class="price-suggest">Нет данных о цене/комиссии для этого товара — прибыль не оценить, добавление отключено.</div>`}
+      : `<div class="price-suggest">${hasInfo ? 'Не указана себестоимость — заполни её выше, чтобы увидеть реальную прибыль.' : 'Нет данных о цене/комиссии для этого товара.'} Добавление отключено, пока прибыль не оценить.</div>`}
   </div>`;
 }
 

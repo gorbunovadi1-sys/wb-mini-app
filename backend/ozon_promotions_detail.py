@@ -45,6 +45,7 @@ def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
         commission_pct = info.get("commission_pct", 0) if info else 0
         logistics_estimate = info.get("logistics_estimate", 0) if info else 0
         tax_pct = info.get("tax_pct", 0) if info else 0
+        has_cost_price = offer_id in cost_prices
         return {
             "product_id": item["id"],
             "offer_id": offer_id,
@@ -57,11 +58,14 @@ def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
             "commission_pct": commission_pct,
             "logistics_estimate": logistics_estimate,
             "tax_pct": tax_pct,
-            "has_cost_price": offer_id in cost_prices,
+            "has_cost_price": has_cost_price,
             # None (not 0) when we couldn't match this product to our price/
-            # commission data at all — showing a profit computed with fake
-            # zero commission/logistics would be actively misleading.
-            "profit": _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct) if info else None,
+            # commission data at all, OR when no cost price is on file for
+            # it — a "profit" computed with cogs_unit silently defaulted to 0
+            # would look like a real number while actually excluding the
+            # cost of the item entirely, which is actively misleading rather
+            # than just imprecise.
+            "profit": _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct) if (info and has_cost_price) else None,
         }
 
     in_action = [_enrich(p, "action_price") for p in client.get_action_products(action_id)]
