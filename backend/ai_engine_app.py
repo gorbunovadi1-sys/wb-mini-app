@@ -326,6 +326,47 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
     raise ValueError(f"unknown marketplace {cabinet['marketplace']}")
 
 
+@app.get("/api/_debug/ozon-accrual-categories/{cabinet_id}")
+def debug_ozon_accrual_categories(cabinet_id: int, telegram_id: int, days: int = 10):
+    """TEMPORARY — checking whether return logistics shows up under a
+    accrued_category we don't currently handle (only POSTING/ITEM/NON_ITEM
+    are parsed in ozon_margin._fetch_accrual_for_day). Makes `days` live
+    accrual/by-day calls. Remove after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet, ozon_max_retries=3)
+    from collections import Counter
+    import datetime as dt
+    cat_counts = Counter()
+    unknown_examples = []
+    posting_field_keys = set()
+    today = dt.date.today()
+    for i in range(days):
+        d = (today - dt.timedelta(days=i)).isoformat()
+        try:
+            accruals = client.get_accrual_by_day(d)
+        except Exception as e:
+            cat_counts[f"ERROR on {d}: {e}"] += 1
+            continue
+        for a in accruals:
+            cat = a.get("accrued_category")
+            cat_counts[str(cat)] += 1
+            if cat == "POSTING":
+                for prod in ((a.get("posting") or {}).get("products") or []):
+                    posting_field_keys.update(prod.keys())
+            if cat not in ("POSTING", "ITEM", "NON_ITEM") and len(unknown_examples) < 3:
+                unknown_examples.append(a)
+    return {
+        "days_checked": days,
+        "category_counts": dict(cat_counts),
+        "posting_product_field_keys": sorted(posting_field_keys),
+        "unknown_category_examples": unknown_examples,
+    }
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
