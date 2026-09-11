@@ -1109,21 +1109,28 @@ function wbPriceCardHtml(p) {
   </div>`;
 }
 
+// bonus (Баллы за скидки) is deliberately excluded from `profit` here —
+// it's only known after a sale happens, tied to whether Ozon funds a
+// discount on this exact item at that moment, and isn't something to
+// price around in advance. Still returned/shown as reference info (Цены
+// shows it as a separate, clearly-labeled line), just not folded into the
+// number that drives pricing decisions. Дашборд/Детализация report a
+// closed period — bonus is already known there — and do include it.
 function computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus) {
   acquiring = acquiring || 0; bonus = bonus || 0;
   const commission = price * (commissionPct / 100);
   const tax = price * ((taxPct || 0) / 100);
   const expensePerUnit = commission + logisticsEstimate + acquiring;
-  const profit = price - cogs - expensePerUnit - tax + bonus;
+  const profit = price - cogs - expensePerUnit - tax;
   return { commission, logistics: logisticsEstimate, acquiring, bonus, expensePerUnit, tax, profit };
 }
 
-function suggestPrice(cogs, commissionPct, logisticsEstimate, targetMarginPct, taxPct, acquiring, bonus) {
-  acquiring = acquiring || 0; bonus = bonus || 0;
-  // price - cogs - price*commissionPct/100 - logistics - acquiring - price*taxPct/100 + bonus = price*targetMarginPct/100
+function suggestPrice(cogs, commissionPct, logisticsEstimate, targetMarginPct, taxPct, acquiring) {
+  acquiring = acquiring || 0;
+  // price - cogs - price*commissionPct/100 - logistics - acquiring - price*taxPct/100 = price*targetMarginPct/100
   const denom = 1 - commissionPct / 100 - (taxPct || 0) / 100 - targetMarginPct / 100;
   if (denom <= 0) return null;
-  return (cogs + logisticsEstimate + acquiring - bonus) / denom;
+  return (cogs + logisticsEstimate + acquiring) / denom;
 }
 
 function renderPricing(items) {
@@ -1211,9 +1218,9 @@ function priceCardHtml(p) {
       <div class="expense-row"><span>Комиссия (${p.commission_pct}%)</span><span class="eb-commission">—</span></div>
       <div class="expense-row"><span>Логистика</span><span class="eb-logistics">—</span></div>
       <div class="expense-row"><span>Эквайринг</span><span class="eb-acquiring">—</span></div>
-      <div class="expense-row"><span>Бонус/компенсация Ozon</span><span class="eb-bonus">—</span></div>
       <div class="expense-row"><span>Налог${p.tax_pct ? ` (${p.tax_pct}%)` : ''}</span><span class="eb-tax">—</span></div>
     </div>
+    ${p.rate_source === 'real' ? `<div class="expense-row" style="padding:0 2px;opacity:.7"><span>Бонус Ozon за баллы (справочно, не в прибыли)</span><span class="eb-bonus">—</span></div>` : ''}
     <div class="price-profit-row">
       <span class="pp-label">Прибыль со штуки</span>
       <span class="pp-value profit-out">—</span>
@@ -1249,7 +1256,7 @@ function bindPriceCard(card) {
     ebCommission.textContent = '−' + fmtMoney(row.commission);
     ebLogistics.textContent = '−' + fmtMoney(row.logistics);
     ebAcquiring.textContent = '−' + fmtMoney(row.acquiring);
-    ebBonus.textContent = '+' + fmtMoney(row.bonus);
+    if (ebBonus) ebBonus.textContent = '+' + fmtMoney(row.bonus);
     ebTax.textContent = '−' + fmtMoney(row.tax);
     profitOut.textContent = fmtMoney(row.profit);
     profitOut.classList.toggle('neg', row.profit < 0);
@@ -1257,7 +1264,7 @@ function bindPriceCard(card) {
     const profit = row.profit;
 
     if (profit < 0) {
-      const suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 15, taxPct, acquiring, bonus);
+      const suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 15, taxPct, acquiring);
       if (suggested && suggested > price) {
         const { profit: newProfit } = computePriceRow(suggested, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus);
         suggestOut.innerHTML = `Чтобы выйти в плюс: цена от <b>${fmtMoney(suggested)}</b> (прибыль ${fmtMoney(newProfit)})`;
@@ -1786,8 +1793,9 @@ function recalcCandProfit(card) {
   const logistics = parseFloat(card.dataset.logistics) || 0;
   const tax = parseFloat(card.dataset.tax) || 0;
   const acquiring = parseFloat(card.dataset.acquiring) || 0;
-  const bonus = parseFloat(card.dataset.bonus) || 0;
-  const profit = price - cogs - (price * (commission / 100) + logistics + acquiring) - price * (tax / 100) + bonus;
+  // No bonus here — see computePriceRow's comment: deciding whether to add
+  // this item to a promo is a forward-looking call, bonus isn't known yet.
+  const profit = price - cogs - (price * (commission / 100) + logistics + acquiring) - price * (tax / 100);
   out.textContent = fmtMoney(profit);
   out.classList.toggle('neg', profit < 0);
   out.classList.toggle('pos', profit >= 0);
