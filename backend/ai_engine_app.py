@@ -343,6 +343,8 @@ def debug_ozon_accrual_categories(cabinet_id: int, telegram_id: int, days: int =
     cat_counts = Counter()
     unknown_examples = []
     posting_field_keys = set()
+    delivery_samples = []
+    negative_delivery_samples = []
     today = dt.date.today()
     for i in range(days):
         d = (today - dt.timedelta(days=i)).isoformat()
@@ -357,12 +359,23 @@ def debug_ozon_accrual_categories(cabinet_id: int, telegram_id: int, days: int =
             if cat == "POSTING":
                 for prod in ((a.get("posting") or {}).get("products") or []):
                     posting_field_keys.update(prod.keys())
+                    delivery = prod.get("delivery") or {}
+                    if len(delivery_samples) < 2:
+                        delivery_samples.append({"date": d, "delivery": delivery, "commission": prod.get("commission")})
+                    amt = (delivery.get("total_accrued") or {}).get("amount")
+                    try:
+                        if amt is not None and float(amt) > 0 and len(negative_delivery_samples) < 3:
+                            negative_delivery_samples.append({"date": d, "posting_number": (a.get("posting") or {}).get("posting_number"), "delivery": delivery})
+                    except (TypeError, ValueError):
+                        pass
             if cat not in ("POSTING", "ITEM", "NON_ITEM") and len(unknown_examples) < 3:
                 unknown_examples.append(a)
     return {
         "days_checked": days,
         "category_counts": dict(cat_counts),
         "posting_product_field_keys": sorted(posting_field_keys),
+        "delivery_samples": delivery_samples,
+        "positive_delivery_samples": negative_delivery_samples,
         "unknown_category_examples": unknown_examples,
     }
 
