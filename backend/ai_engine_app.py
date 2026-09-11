@@ -326,6 +326,61 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
     raise ValueError(f"unknown marketplace {cabinet['marketplace']}")
 
 
+@app.get("/api/_debug/ozon-price-basis/{cabinet_id}")
+def debug_ozon_price_basis(cabinet_id: int, telegram_id: int, date: str):
+    """TEMPORARY — checking whether accrual's commission base (seller_price/
+    sale_amount) matches the postings-list price we sum as revenue, for the
+    same SKU on the same day. One live accrual/by-day call; postings come
+    from cache (no new Ozon call for those). Remove after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet, ozon_max_retries=3)
+
+    accruals = client.get_accrual_by_day(date)
+    posting_commission_by_sku = {}
+    for a in accruals:
+        if a.get("accrued_category") != "POSTING":
+            continue
+        for prod in ((a.get("posting") or {}).get("products") or []):
+            sku = prod.get("sku")
+            if not sku:
+                continue
+            posting_commission_by_sku.setdefault(sku, []).append({
+                "seller_price": (prod.get("commission") or {}).get("seller_price"),
+                "sale_price": (prod.get("commission") or {}).get("sale_price"),
+                "sale_amount": (prod.get("commission") or {}).get("sale_amount"),
+                "commission_ratio": (prod.get("commission") or {}).get("commission_ratio"),
+                "commission_amount": (prod.get("commission") or {}).get("commission"),
+            })
+
+    cached = ozon_sales_cache.get(cabinet_id)
+    listing_price_by_sku = {}
+    if cached:
+        postings, _, _, _, _ = cached
+        for p in postings:
+            ts = p.get("in_process_at") or p.get("created_at") or ""
+            if ts[:10] != date:
+                continue
+            for prod in p.get("products", []):
+                sku = prod.get("sku")
+                if sku:
+                    listing_price_by_sku.setdefault(sku, []).append({
+                        "price": prod.get("price"), "status": p.get("status"), "qty": prod.get("quantity"),
+                    })
+
+    comparison = []
+    for sku in list(posting_commission_by_sku.keys())[:15]:
+        comparison.append({
+            "sku": sku,
+            "accrual_commission_basis": posting_commission_by_sku[sku],
+            "listing_price": listing_price_by_sku.get(sku, "NOT FOUND IN CACHED POSTINGS FOR THIS DATE"),
+        })
+    return {"date": date, "skus_in_accrual": len(posting_commission_by_sku), "skus_in_cached_listing": len(listing_price_by_sku), "comparison": comparison}
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
