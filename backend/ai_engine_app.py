@@ -326,31 +326,41 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
     raise ValueError(f"unknown marketplace {cabinet['marketplace']}")
 
 
-@app.get("/api/_debug/ozon-realization/{cabinet_id}")
-def debug_ozon_realization(cabinet_id: int, telegram_id: int, year: int, month: int):
-    """TEMPORARY — checking whether /v2/finance/realization (the official
-    monthly Отчёт о реализации) carries the cost categories missing from
-    accrual/by-day (Услуги партнёров beyond Эквайринг, Другие услуги,
-    Продвижение, Компенсации, Возвраты). One live call. Remove after use."""
+@app.get("/api/_debug/ozon-accrual-postings/{cabinet_id}")
+def debug_ozon_accrual_postings(cabinet_id: int, telegram_id: int, date_from: str, date_to: str):
+    """TEMPORARY — checking whether /v1/finance/accrual/postings and
+    /v1/finance/accrual/types (Ozon's currently-recommended financial-report
+    methods) carry the cost categories missing from accrual/by-day (Услуги
+    партнёров beyond Эквайринг, Другие услуги, Продвижение, Компенсации,
+    Возвраты). One live call each. Remove after use."""
     if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
         raise HTTPException(status_code=403, detail="admin only")
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["marketplace"] != "ozon":
         raise HTTPException(status_code=400, detail="not an Ozon cabinet")
     client = _build_client(cabinet, ozon_max_retries=3)
-    result = client.get_realization_report(year, month)
-    header = result.get("header")
-    rows = result.get("rows") or []
-    sample_row = rows[0] if rows else None
+    postings = client.get_accrual_postings(date_from, date_to)
+    types = client.get_accrual_types()
+    p_result = postings.get("result") if isinstance(postings, dict) else postings
+    if isinstance(p_result, dict):
+        top_keys = list(p_result.keys())
+        rows = p_result.get("postings") or p_result.get("rows") or []
+    elif isinstance(p_result, list):
+        top_keys = ["<list>"]
+        rows = p_result
+    else:
+        top_keys, rows = [], []
     all_keys = set()
-    for r in rows[:50]:
-        all_keys.update(r.keys())
+    for r in rows[:50] if isinstance(rows, list) else []:
+        if isinstance(r, dict):
+            all_keys.update(r.keys())
     return {
-        "top_level_keys": list(result.keys()),
-        "header": header,
-        "rows_count": len(rows),
-        "row_keys": sorted(all_keys),
-        "sample_row": sample_row,
+        "postings_top_level_keys": list(postings.keys()) if isinstance(postings, dict) else str(type(postings)),
+        "postings_result_keys": top_keys,
+        "postings_rows_count": len(rows) if isinstance(rows, list) else None,
+        "postings_row_keys": sorted(all_keys),
+        "postings_sample_row": rows[0] if isinstance(rows, list) and rows else None,
+        "types_raw": types,
     }
 
 

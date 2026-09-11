@@ -256,6 +256,24 @@ class OzonClient:
         data = self._post("/v1/finance/accrual/by-day", {"date": date_str})
         return data.get("accruals", [])
 
+    def get_accrual_postings(self, date_from, date_to):
+        """POST /v1/finance/accrual/postings — per-posting accrual breakdown,
+        one of the two methods Ozon's dev-news article recommends alongside
+        accrual/by-day as the current (non-deprecated) financial-report
+        methods. Being probed as a possible source for cost categories
+        missing from accrual/by-day (see project_ozon_accrual_api_gap memory)."""
+        data = self._post("/v1/finance/accrual/postings", {
+            "date": {"from": date_from, "to": date_to},
+            "page": 1, "page_size": 1000,
+        })
+        return data
+
+    def get_accrual_types(self):
+        """POST /v1/finance/accrual/types — reference list of accrual type_ids
+        and their category/group names, used to decode the type_id values in
+        accrual/by-day and accrual/postings entries."""
+        return self._post("/v1/finance/accrual/types", {})
+
     def get_realization_report(self, year, month):
         """POST /v2/finance/realization — the official monthly seller settlement
         report (Отчёт о реализации). Returns the raw `result` dict with header+rows;
