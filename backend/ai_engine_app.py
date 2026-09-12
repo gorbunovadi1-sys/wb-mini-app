@@ -421,6 +421,59 @@ def debug_ozon_scan_status(cabinet_id: int, telegram_id: int):
     return _scan_state.get(cabinet_id, {"status": "not started"})
 
 
+@app.get("/api/_debug/ozon-august-totals/{cabinet_id}")
+def debug_ozon_august_totals(cabinet_id: int, telegram_id: int, date_from: str, date_to: str):
+    """TEMPORARY — dump our own computed account totals for a period straight
+    from cache (no live Ozon calls), to compare against the official
+    realization report / real balance and see where the ~2.27M vs 975K gap
+    actually lives now that missing-category totals turned out too small
+    (~49K/month) to explain it. Remove after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    cost_prices = cabinets.get_cost_prices(cabinet_id)
+    tax_pct = cabinet.get("settings", {}).get("tax_pct", 0)
+    cached = ozon_sales_cache.get(cabinet_id)
+    cpostings, caccrual, cnonitem, ccover_from = (cached[0], cached[1], cached[2], cached[3]) if cached else (None, None, None, None)
+    result = ozon_margin.build_margin_summary(
+        client=None, cost_prices=cost_prices, date_from=date_from, date_to=date_to, tax_pct=tax_pct,
+        cached_postings=cpostings, cached_accrual_by_date=caccrual,
+        cached_non_item_by_date=cnonitem, cache_cover_from=ccover_from,
+    )
+    acc = result.get("account", {})
+    return {"account": acc, "products_count": len(result.get("products", []))}
+
+
+@app.get("/api/_debug/ozon-realization-totals/{cabinet_id}")
+def debug_ozon_realization_totals(cabinet_id: int, telegram_id: int, year: int, month: int):
+    """TEMPORARY — official /v2/finance/realization totals for the month
+    (the seller's real monthly settlement report), to diff against our own
+    accrual-based totals from ozon-august-totals above."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet, ozon_max_retries=2)
+    result = client.get_realization_report(year, month)
+    rows = result.get("rows") or []
+    total_seller_price = sum(float(r.get("seller_price_per_instance") or 0) * float((r.get("delivery_commission") or {}).get("quantity") or 0) for r in rows)
+    total_commission = sum(float((r.get("delivery_commission") or {}).get("commission") or 0) for r in rows)
+    total_bonus = sum(float((r.get("delivery_commission") or {}).get("bonus") or 0) for r in rows)
+    total_return_commission = sum(float((r.get("return_commission") or {}).get("commission") or 0) if r.get("return_commission") else 0 for r in rows)
+    return {
+        "header": result.get("header"),
+        "rows_count": len(rows),
+        "total_seller_price_x_qty": round(total_seller_price, 2),
+        "total_commission": round(total_commission, 2),
+        "total_bonus": round(total_bonus, 2),
+        "total_return_commission": round(total_return_commission, 2),
+        "sample_row": rows[0] if rows else None,
+    }
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
