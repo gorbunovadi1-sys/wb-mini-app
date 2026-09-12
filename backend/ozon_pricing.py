@@ -11,6 +11,13 @@ from . import cabinets, ozon_margin, ozon_sales_cache
 # category reference rate) instead — see get_pricing_list.
 MIN_QTY_FOR_REAL_RATE = 5
 
+# How far (in percentage points) a real-data commission% may stray from
+# Ozon's own quoted category rate before it's distrusted entirely — see
+# get_pricing_list. Loose enough to allow genuine cross-category/price-
+# bracket variation, tight enough to reject the kind of distortion caught
+# live (76-91% real vs 51% or lower quoted).
+REAL_VS_QUOTED_SANITY_MARGIN_PCT = 15
+
 
 def _real_rates_by_offer(cabinet_id: int):
     """Real per-offer commission % and logistics-per-unit, derived from the
@@ -53,8 +60,20 @@ def _real_rates_by_offer(cabinet_id: int):
         # get_pricing_list) rather than published as "real".
         if p["qty"] < MIN_QTY_FOR_REAL_RATE:
             continue
+        # Commission is Ozon's cut of the NOMINAL price (before any
+        # Ozon-funded promo discount) — the bonus/coinvestment credit is
+        # exactly that discount refunded to the seller (verified: bonus ==
+        # seller_price - sale_price, see project_ozon_bonus_coinvestment_fix
+        # in session memory), so `revenue` (sale_price, net of the discount)
+        # understates the price commission was actually charged against.
+        # Dividing by revenue alone overstated commission% for any offer
+        # that historically sold through a bonus-funded promo — caught live
+        # (2026-09-13): a "Бур" offer showed 76-77% here against Ozon's own
+        # 51% category rate card, and adding bonus back into the
+        # denominator brings it back in line.
+        nominal_revenue = p["revenue"] + p["bonus"]
         rates[p["offer_id"]] = {
-            "commission_pct": round(p["commission"] / p["revenue"] * 100, 2),
+            "commission_pct": round(p["commission"] / nominal_revenue * 100, 2) if nominal_revenue else 0,
             "logistics_per_unit": round(p["delivery"] / p["qty"], 2),
             # "item_fees" here is Ozon's acquiring fee specifically for this
             # cabinet (verified live: every ITEM-category accrual entry on
@@ -123,7 +142,26 @@ def get_pricing_list(client, cabinet_id: int) -> list:
         commissions = p.get("commissions") or {}
         stock = stocks.get(offer_id, {"fbo": 0, "fbs": 0})
 
+        # Computed unconditionally (not just as the no-real-data fallback):
+        # Ozon's own quoted reference rate for this exact offer's category
+        # is an authoritative sanity check for the real-data-derived rate
+        # below, whatever the actual distortion mechanism turns out to be.
+        fulfillment = "fbo" if stock["fbo"] > stock["fbs"] else "fbs"
+        est_sales_pct, est_logistics_estimate = _estimate_rate(commissions, fulfillment)
+
         real = real_rates.get(offer_id)
+        # Even after correcting for the bonus/nominal-price distortion
+        # above, a real-data commission% can still land far from Ozon's own
+        # quoted category rate (caught live 2026-09-13: a "Ведро" offer
+        # showed 91.6% with real sales history, no plausible bonus
+        # adjustment gets it close to a sane houseware-category rate) —
+        # rather than chase every possible distortion mechanism, distrust
+        # the whole real-data rate set for this offer whenever it strays
+        # this far from the authoritative quoted rate and fall back to that
+        # instead of guessing which part of "real" might still be right.
+        if real and est_sales_pct and abs(real["commission_pct"] - est_sales_pct) > REAL_VS_QUOTED_SANITY_MARGIN_PCT:
+            real = None
+
         if real:
             sales_pct = real["commission_pct"]
             logistics_estimate = real["logistics_per_unit"]
@@ -131,16 +169,16 @@ def get_pricing_list(client, cabinet_id: int) -> list:
             bonus = real["bonus_per_unit"]
             rate_source = "real"
         else:
-            # No sales history yet to derive real rates from — fall back to
-            # Ozon's quoted reference rates for whichever scheme this
-            # product's stock is actually sitting in (defaults to FBS when
-            # there's no stock either way, since that's this app's most
-            # common setup, but a client whose catalog is FBO gets FBO rates
+            # No sales history yet to derive real rates from (or the real
+            # rate failed the sanity check above) — fall back to Ozon's
+            # quoted reference rate for whichever scheme this product's
+            # stock is actually sitting in (defaults to FBS when there's no
+            # stock either way, since that's this app's most common setup,
+            # but a client whose catalog is FBO gets FBO rates
             # automatically, no manual switch needed). Acquiring has no
             # equivalent "reference rate" field to estimate from — use the
             # cabinet-wide average instead of 0, a much better guess.
-            fulfillment = "fbo" if stock["fbo"] > stock["fbs"] else "fbs"
-            sales_pct, logistics_estimate = _estimate_rate(commissions, fulfillment)
+            sales_pct, logistics_estimate = est_sales_pct, est_logistics_estimate
             acquiring = shop_avg_acquiring
             bonus = 0
             rate_source = "estimate"
