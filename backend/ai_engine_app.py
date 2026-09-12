@@ -334,6 +334,25 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
 
 
 
+@app.get("/api/_debug/ozon-posting-number-field/{cabinet_id}")
+def debug_ozon_posting_number_field(cabinet_id: int, telegram_id: int, date_str: str):
+    """TEMPORARY, single call — confirms the exact field name for a
+    POSTING-category accrual entry's posting identifier, needed to filter
+    per_sku_accrual by buyout status. Remove right after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet, ozon_max_retries=1)
+    accruals = client.get_accrual_by_day(date_str)
+    for a in accruals:
+        if a.get("accrued_category") == "POSTING":
+            posting = a.get("posting") or {}
+            return {"posting_keys": list(posting.keys()), "posting_sample": {k: v for k, v in posting.items() if k != "products"}}
+    return {"found": False}
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
