@@ -350,8 +350,9 @@ def debug_ozon_product_detail(cabinet_id: int, telegram_id: int, date_from: str,
     tax_pct = cabinet.get("settings", {}).get("tax_pct", 0)
     cached = ozon_sales_cache.get(cabinet_id)
     cpostings, caccrual, cnonitem, ccover_from = (cached[0], cached[1], cached[2], cached[3]) if cached else (None, None, None, None)
+    client = _build_client(cabinet, ozon_max_retries=3)
     result = ozon_margin.build_margin_summary(
-        client=None, cost_prices=cost_prices, date_from=date_from, date_to=date_to, tax_pct=tax_pct,
+        client=client, cost_prices=cost_prices, date_from=date_from, date_to=date_to, tax_pct=tax_pct,
         cached_postings=cpostings, cached_accrual_entries=caccrual,
         cached_non_item_by_date=cnonitem, cache_cover_from=ccover_from,
     )
