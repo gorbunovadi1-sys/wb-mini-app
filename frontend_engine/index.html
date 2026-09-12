@@ -165,7 +165,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .card canvas { max-height: 200px; }
 
 .date-range { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
-.date-range .field { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 120px; }
+.date-range .field { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 120px; }
 .date-range label { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em; }
 .date-range input[type=date] {
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px; color: var(--text);
@@ -277,13 +277,12 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .price-margin-row .pm-value.pos { color: var(--positive); }
 .price-suggest { font-size: 10.5px; color: var(--text-secondary); margin-top: 4px; }
 .price-suggest b { color: var(--positive); font-family: var(--font-mono); }
-.price-bracket-row { margin-bottom: 8px; }
-.bracket-refresh-btn {
-  width: 100%; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text-secondary);
-  font-family: var(--font); font-size: 10.5px; font-weight: 600; padding: 6px 10px; cursor: pointer; transition: background .15s, border-color .15s, color .15s;
+#pricingRefreshCommissions {
+  width: 100%; margin-bottom: 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text-secondary);
+  font-family: var(--font); font-size: 12px; font-weight: 600; padding: 8px 10px; cursor: pointer; transition: background .15s, border-color .15s, color .15s;
 }
-.bracket-refresh-btn.active { border-color: var(--warn-text); color: var(--warn-text); background: var(--warn-bg); font-weight: 700; }
-.bracket-warn-text { font-size: 10px; color: var(--warn-text); margin-top: 6px; line-height: 1.4; }
+#pricingRefreshCommissions.active { border-color: var(--warn-text); color: var(--warn-text); background: var(--warn-bg); font-weight: 700; }
+.bracket-warn-text { font-size: 10px; color: var(--warn-text); margin-top: 8px; margin-bottom: -4px; line-height: 1.4; }
 .price-save-row { margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px; }
 .price-save-btn {
   border: none; border-radius: 8px; padding: 7px 14px; font-family: var(--font); font-size: 11.5px; font-weight: 700; cursor: pointer;
@@ -1218,6 +1217,7 @@ function renderPricing(items) {
   const el = document.getElementById('content');
   el.innerHTML = `
     <input class="search-box" id="pricingSearch" placeholder="Поиск по названию или артикулу…">
+    <button id="pricingRefreshCommissions" type="button" title="Подтянуть с Ozon точный процент комиссии для всех сохранённых цен">Обновить комиссии</button>
     <div class="date-range" style="align-items:center">
       <div class="field" style="flex:2">
         <label>Сортировка по прибыли</label>
@@ -1248,6 +1248,13 @@ function renderPricing(items) {
   const sortEl = document.getElementById('pricingSort');
   const onlyNegEl = document.getElementById('pricingOnlyNeg');
   const stockFilterEl = document.getElementById('pricingStockFilter');
+  const refreshBtn = document.getElementById('pricingRefreshCommissions');
+  const listEl = document.getElementById('pricingList');
+
+  const updateRefreshBtnState = () => {
+    const anyCrossed = Array.from(listEl.querySelectorAll('.price-card')).some(c => c._bracketCrossed);
+    refreshBtn.classList.toggle('active', anyCrossed);
+  };
 
   const renderList = () => {
     const q = searchEl.value.trim().toLowerCase();
@@ -1262,15 +1269,62 @@ function renderPricing(items) {
     if (sortEl.value === 'asc') list = [...list].sort((a, b) => a.currentProfit - b.currentProfit);
     else if (sortEl.value === 'desc') list = [...list].sort((a, b) => b.currentProfit - a.currentProfit);
 
-    const listEl = document.getElementById('pricingList');
     listEl.innerHTML = list.slice(0, 200).map(priceCardHtml).join('') || '<div class="state-msg">Ничего не найдено</div>';
     listEl.querySelectorAll('.price-card').forEach(bindPriceCard);
+    updateRefreshBtnState();
   };
   renderList();
   searchEl.addEventListener('input', renderList);
   sortEl.addEventListener('change', renderList);
   onlyNegEl.addEventListener('change', renderList);
   stockFilterEl.addEventListener('change', renderList);
+  // Price/cost inputs fire native 'input' events, which bubble — one
+  // delegated listener on the list catches every card's edits instead of
+  // wiring a separate listener per card.
+  listEl.addEventListener('input', updateRefreshBtnState);
+
+  refreshBtn.addEventListener('click', async () => {
+    // One fetch refreshes every visible card at once, instead of a
+    // per-card button + a fetch per card. Ozon only ever reports the
+    // commission for whatever price is CURRENTLY live on its side — see
+    // priceBracket — so this is only accurate once a changed price has
+    // actually been pushed (via "Сохранить" + the send bar) and Ozon has
+    // recalculated server-side.
+    const original = refreshBtn.textContent;
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = 'Обновляю…';
+    try {
+      const data = await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/pricing`);
+      const freshByOffer = {};
+      (data.items || []).forEach(i => { freshByOffer[i.offer_id] = i; });
+      items.forEach(p => {
+        const fresh = freshByOffer[p.offer_id];
+        if (fresh) {
+          p.commission_pct = fresh.commission_pct;
+          p.logistics_estimate = fresh.logistics_estimate;
+          p.acquiring = fresh.acquiring;
+          p.bonus = fresh.bonus;
+          p.price = fresh.price;
+          p.old_price = fresh.old_price;
+          p.rate_source = fresh.rate_source;
+        }
+      });
+      let anyStillOld = false;
+      listEl.querySelectorAll('.price-card').forEach(card => {
+        const fresh = freshByOffer[card.dataset.offer];
+        if (fresh && card._applyFreshOzonRate && card._applyFreshOzonRate(fresh)) anyStillOld = true;
+      });
+      updateRefreshBtnState();
+      if (anyStillOld) {
+        alert('Для части товаров на Ozon пока действует прежняя цена — новая ещё не применилась. Сохраните цену(ы) и подождите немного, потом нажмите «Обновить комиссии» ещё раз.');
+      }
+    } catch (e) {
+      alert('Не удалось обновить комиссии: ' + e.message);
+    } finally {
+      refreshBtn.disabled = false;
+      refreshBtn.textContent = original;
+    }
+  });
 }
 
 function priceCardHtml(p) {
@@ -1295,10 +1349,7 @@ function priceCardHtml(p) {
       <span>Остаток FBO: ${fmtNum(p.fbo_stock || 0)}</span>
       <span>FBS: ${fmtNum(p.fbs_stock || 0)}</span>
     </div>
-    <div class="price-bracket-row">
-      <button class="bracket-refresh-btn" title="Обновить процент комиссии данными с Ozon">Обновить комиссию</button>
-      <div class="bracket-warn-text" style="display:none">⚠️ Цена перешла в другой ценовой диапазон комиссии Ozon (границы 100₽/300₽). Сначала сохраните цену кнопкой «Сохранить» ниже — только после того как Ozon применит её, «Обновить комиссию» покажет точный процент.</div>
-    </div>
+    <div class="bracket-warn-text" style="display:none">⚠️ Цена перешла в другой ценовой диапазон комиссии Ozon (границы 100₽/300₽). Сохраните цену, затем нажмите «Обновить комиссии» наверху списка — точный процент подтянется только после того как Ozon применит новую цену.</div>
     ${rateSourceBadge(p.rate_source)}
     <div class="expense-breakdown">
       <div class="expense-toggle"><span>Расходы</span><span class="expense-chevron">▾</span></div>
@@ -1368,7 +1419,6 @@ function bindPriceCard(card) {
   const ebTax = card.querySelector('.eb-tax');
   const ebTotal = card.querySelector('.eb-total');
   const bracketWarnText = card.querySelector('.bracket-warn-text');
-  const bracketRefreshBtn = card.querySelector('.bracket-refresh-btn');
   const expenseToggle = card.querySelector('.expense-toggle');
   if (expenseToggle) {
     expenseToggle.addEventListener('click', () => {
@@ -1382,7 +1432,7 @@ function bindPriceCard(card) {
     const row = computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus);
     if (ebCommissionPct) ebCommissionPct.textContent = commissionPct;
     const bracketCrossed = priceBracket(livePrice) !== null && priceBracket(price) !== null && priceBracket(livePrice) !== priceBracket(price);
-    if (bracketRefreshBtn) bracketRefreshBtn.classList.toggle('active', bracketCrossed);
+    card._bracketCrossed = bracketCrossed;
     if (bracketWarnText) bracketWarnText.style.display = bracketCrossed ? '' : 'none';
     ebCommission.textContent = '−' + fmtMoney(row.commission);
     ebLogistics.textContent = '−' + fmtMoney(row.logistics);
@@ -1443,43 +1493,22 @@ function bindPriceCard(card) {
   priceInput.addEventListener('input', recalc);
   cogsInput.addEventListener('input', recalc);
 
-  if (bracketRefreshBtn) {
-    bracketRefreshBtn.addEventListener('click', async () => {
-      // Ozon only ever reports the commission for whatever price is
-      // CURRENTLY live on its side — there's no "what if" endpoint for a
-      // hypothetical price in a different bracket. So this only becomes
-      // accurate once the new price has actually been pushed (via
-      // "Сохранить" + the send bar) and Ozon has recalculated server-side;
-      // re-fetching too soon after pushing may still show the old rate.
-      bracketRefreshBtn.disabled = true;
-      bracketRefreshBtn.textContent = 'Обновляю…';
-      try {
-        const data = await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/pricing`);
-        const fresh = (data.items || []).find(i => i.offer_id === offerId);
-        if (!fresh) {
-          alert('Товар не найден в свежих данных Ozon');
-        } else {
-          const typedPrice = parseFloat(priceInput.value) || 0;
-          const stillOldPrice = (fresh.price || 0) !== typedPrice && priceBracket(fresh.price) !== priceBracket(typedPrice);
-          commissionPct = fresh.commission_pct;
-          logisticsEstimate = fresh.logistics_estimate;
-          acquiring = fresh.acquiring || 0;
-          bonus = fresh.bonus || 0;
-          oldPriceOriginal = fresh.old_price || 0;
-          livePrice = fresh.price || 0;
-          recalc();
-          if (stillOldPrice) {
-            alert('На Ozon пока действует прежняя цена — новая ещё не применилась. Сохраните цену и подождите немного, потом нажмите «Обновить комиссию» ещё раз.');
-          }
-        }
-      } catch (e) {
-        alert('Не удалось обновить комиссию: ' + e.message);
-      } finally {
-        bracketRefreshBtn.disabled = false;
-        bracketRefreshBtn.textContent = 'Обновить комиссию';
-      }
-    });
-  }
+  // Called by the single global "Обновить комиссии" button in renderPricing
+  // (one API call refreshes every visible card, instead of a per-card
+  // button + a fetch per card) — see also priceBracket's docstring for why
+  // this can only be accurate once the new price is actually live on Ozon.
+  card._applyFreshOzonRate = function (fresh) {
+    const typedPrice = parseFloat(priceInput.value) || 0;
+    const stillOldPrice = (fresh.price || 0) !== typedPrice && priceBracket(fresh.price) !== priceBracket(typedPrice);
+    commissionPct = fresh.commission_pct;
+    logisticsEstimate = fresh.logistics_estimate;
+    acquiring = fresh.acquiring || 0;
+    bonus = fresh.bonus || 0;
+    oldPriceOriginal = fresh.old_price || 0;
+    livePrice = fresh.price || 0;
+    recalc();
+    return stillOldPrice;
+  };
 
   cogsOnlyBtn.addEventListener('click', async () => {
     const cogs = parseFloat(cogsInput.value) || 0;
