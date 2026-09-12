@@ -8,7 +8,7 @@ import requests
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -334,6 +334,115 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
 
 
 
+
+
+_totals_verify_state = {}
+
+
+def _compute_totals_verify_sync(cabinet_id: int, date_from: str, date_to: str):
+    """Like ozon_sales_cache.refresh(): builds buyout/shipped posting-number
+    sets from the FULL cached postings pool (180-day window), not sliced to
+    [date_from, date_to] — a return accrued in this period for an order
+    created in an earlier period must still pass the buyout filter, or its
+    reversal gets silently dropped (this was the actual bug in the earlier
+    verification attempt tonight, not the sale_price approach itself)."""
+    import datetime as _dt
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    cost_prices = cabinets.get_cost_prices(cabinet_id)
+    tax_pct = cabinet.get("settings", {}).get("tax_pct", 0)
+    cached = ozon_sales_cache.get(cabinet_id)
+    if not cached:
+        raise RuntimeError("no cache for this cabinet")
+    cpostings = cached[0]
+    d_from = _dt.date.fromisoformat(date_from)
+    d_to = _dt.date.fromisoformat(date_to)
+    postings = ozon_margin._slice_postings(cpostings, d_from, d_to)
+
+    import collections as _collections
+    per_offer_orders = _collections.defaultdict(ozon_margin._empty_bucket)
+    per_offer_buyouts = _collections.defaultdict(ozon_margin._empty_bucket)
+    daily = _collections.defaultdict(lambda: {"revenue": 0.0, "qty": 0})
+    totals_orders = ozon_margin._empty_bucket()
+    totals_buyouts = ozon_margin._empty_bucket()
+    totals_cancelled = ozon_margin._empty_bucket()
+    sku_to_offer = {}
+    ozon_margin._accumulate_postings(postings, per_offer_orders, per_offer_buyouts, daily, totals_orders, totals_buyouts, totals_cancelled, sku_to_offer)
+
+    # Full-pool scope sets (the fix) — and sku_to_offer must ALSO come from
+    # the full pool, not just this period's postings, or a return's SKU
+    # (belonging to an out-of-period posting) has nowhere to roll up to.
+    full_sku_to_offer = {}
+    _fpo, _fpb = _collections.defaultdict(ozon_margin._empty_bucket), _collections.defaultdict(ozon_margin._empty_bucket)
+    ozon_margin._accumulate_postings(
+        cpostings, _fpo, _fpb, _collections.defaultdict(lambda: {"revenue": 0.0, "qty": 0}),
+        ozon_margin._empty_bucket(), ozon_margin._empty_bucket(), ozon_margin._empty_bucket(), full_sku_to_offer,
+    )
+    buyout_posting_numbers, shipped_posting_numbers = ozon_margin.accrual_scope_sets(cpostings)
+
+    client = _build_client(cabinet, ozon_max_retries=2)
+    per_sku_accrual, non_item_total = ozon_margin._fetch_accrual_breakdown(client, d_from, d_to, buyout_posting_numbers, shipped_posting_numbers)
+    other_fees_cost = abs(non_item_total)
+
+    per_offer_accrual = _collections.defaultdict(lambda: {"revenue": 0.0, "commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
+    for sku, offer_id in full_sku_to_offer.items():
+        a = per_sku_accrual.get(str(sku))
+        if not a:
+            continue
+        oa = per_offer_accrual[offer_id]
+        oa["revenue"] += a.get("revenue", 0.0)
+        oa["commission"] += a["commission"]
+        oa["delivery"] += a["delivery"]
+        oa["item_fees"] += a["item_fees"]
+        oa["bonus"] += a.get("bonus", 0.0)
+
+    # Revenue/commission/bonus: sum ALL of per_offer_accrual (sale_price-based
+    # revenue is return-aware — a return for an offer with zero buyouts THIS
+    # period, e.g. it was all returned, still needs to count).
+    total_revenue = sum(a["revenue"] for a in per_offer_accrual.values())
+    total_commission = sum(abs(a["commission"]) for a in per_offer_accrual.values())
+    total_bonus = sum(a["bonus"] for a in per_offer_accrual.values())
+    total_item_fees = sum(abs(a["item_fees"]) for a in per_offer_accrual.values())
+    total_delivery = sum(abs(a["delivery"]) for a in per_offer_accrual.values())
+    total_cogs = sum(cost_prices.get(offer_id, 0) * p["qty"] for offer_id, p in per_offer_buyouts.items())
+    total_tax = total_revenue * (tax_pct / 100)
+
+    total_payout_real = total_revenue + total_bonus - total_commission - total_delivery - total_item_fees - other_fees_cost
+    total_profit = total_payout_real - total_cogs - total_tax
+    return {
+        "revenue": round(total_revenue, 2), "commission": round(total_commission, 2),
+        "bonus": round(total_bonus, 2), "delivery": round(total_delivery, 2),
+        "item_fees": round(total_item_fees, 2), "other_fees": round(other_fees_cost, 2),
+        "cogs_total": round(total_cogs, 2), "tax": round(total_tax, 2),
+        "payout_real": round(total_payout_real, 2), "profit": round(total_profit, 2),
+    }
+
+
+async def _run_totals_verify(cabinet_id: int, date_from: str, date_to: str):
+    state = _totals_verify_state[cabinet_id] = {"running": True}
+    try:
+        account = await asyncio.to_thread(_compute_totals_verify_sync, cabinet_id, date_from, date_to)
+        state["account"] = account
+        state["error"] = None
+    except Exception as e:
+        state["error"] = str(e)
+    state["running"] = False
+
+
+@app.get("/api/_debug/ozon-totals-verify-start/{cabinet_id}")
+def debug_ozon_totals_verify_start(cabinet_id: int, telegram_id: int, date_from: str, date_to: str, background_tasks: BackgroundTasks):
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    if _totals_verify_state.get(cabinet_id, {}).get("running"):
+        return {"status": "already running"}
+    background_tasks.add_task(_run_totals_verify, cabinet_id, date_from, date_to)
+    return {"status": "started"}
+
+
+@app.get("/api/_debug/ozon-totals-verify-status/{cabinet_id}")
+def debug_ozon_totals_verify_status(cabinet_id: int, telegram_id: int):
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    return _totals_verify_state.get(cabinet_id, {"status": "not started"})
 
 
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
