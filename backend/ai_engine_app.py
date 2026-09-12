@@ -346,17 +346,11 @@ def debug_ozon_posting_number_field(cabinet_id: int, telegram_id: int, date_str:
         raise HTTPException(status_code=400, detail="not an Ozon cabinet")
     client = _build_client(cabinet, ozon_max_retries=1)
     accruals = client.get_accrual_by_day(date_str)
-    for a in accruals:
-        if a.get("accrued_category") == "POSTING":
-            posting = a.get("posting") or {}
-            prod = (posting.get("products") or [{}])[0]
-            return {
-                "top_level_keys": list(a.keys()),
-                "top_level_sample": {k: v for k, v in a.items() if k != "posting"},
-                "posting_keys": list(posting.keys()),
-                "product_keys": list(prod.keys()),
-            }
-    return {"found": False}
+    unit_numbers = [a.get("unit_number") for a in accruals if a.get("accrued_category") == "POSTING"][:10]
+    fbs = client.get_fbs_postings(f"{date_str}T00:00:00Z", f"{date_str}T23:59:59Z")
+    fbo = client.get_fbo_postings(f"{date_str}T00:00:00Z", f"{date_str}T23:59:59Z")
+    posting_numbers = [p.get("posting_number") for p in (fbs + fbo)][:10]
+    return {"sample_unit_numbers": unit_numbers, "sample_posting_numbers": posting_numbers}
 
 
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
