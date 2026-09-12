@@ -260,6 +260,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .expense-breakdown { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 4px; }
 .expense-row { display: flex; justify-content: space-between; font-size: 11px; font-family: var(--font-mono); color: var(--text-secondary); }
 .expense-row span:last-child { color: var(--text); }
+.expense-row span.eb-neg { color: var(--negative); font-weight: 600; }
 .price-profit-row { display: flex; justify-content: space-between; align-items: baseline; padding-top: 8px; border-top: 1px solid var(--border); }
 .price-profit-row .pp-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; }
 .price-profit-row .pp-value { font-family: var(--font-mono); font-size: 17px; font-weight: 700; }
@@ -746,6 +747,36 @@ function productCardHtml(p, maxAbsProfit) {
   const neg = p.profit < 0;
   const barWidth = Math.max(4, Math.abs(p.profit) / maxAbsProfit * 100);
   const itemKey = p.offer_id !== undefined && p.offer_id !== null ? p.offer_id : p.nm_id;
+  const isOzon = p.delivery !== undefined; // Ozon products carry delivery/item_fees/bonus/tax; WB carries logistics/storage/penalty_deduction/ad_spend/forpay instead
+  const row = (label, value, sign) => `<div class="expense-row"><span>${label}</span><span>${sign || ''}${fmtMoney(value)}</span></div>`;
+  let expenseRows;
+  if (isOzon) {
+    // "К перечислению" — what Ozon actually pays out before the seller's
+    // own cost price and tax, same formula as the account-level payout_real,
+    // just scaled to this one product.
+    const payout = p.revenue + (p.bonus || 0) - p.commission - p.delivery - p.item_fees;
+    expenseRows = `
+      ${row('Продано', p.qty + ' шт.')}
+      ${row('Выручка', p.revenue)}
+      ${p.bonus ? `<div class="expense-row"><span>Бонус Ozon за баллы</span><span>${p.bonus >= 0 ? '+' : ''}${fmtMoney(p.bonus)}</span></div>` : ''}
+      ${row('Комиссия', p.commission, '−')}
+      ${row('Логистика', p.delivery, '−')}
+      ${row('Прочие сборы', p.item_fees, '−')}
+      <div class="expense-row" style="border-top:1px solid var(--border);margin-top:2px;padding-top:4px"><span>К перечислению</span><span>${fmtMoney(payout)}</span></div>
+      ${row(`Себестоимость (${fmtMoney(p.cogs_unit)}/шт.)`, p.cogs_total, '−')}
+      ${row('Налог', p.tax, '−')}`;
+  } else {
+    expenseRows = `
+      ${row('Продано', p.qty + ' шт.')}
+      ${row('Выручка', p.revenue)}
+      ${row('Комиссия', p.commission, '−')}
+      ${row('Логистика', p.logistics, '−')}
+      ${p.storage ? row('Хранение', p.storage, '−') : ''}
+      ${p.penalty_deduction ? row('Штрафы/удержания', p.penalty_deduction, '−') : ''}
+      ${p.ad_spend ? row('Реклама', p.ad_spend, '−') : ''}
+      <div class="expense-row" style="border-top:1px solid var(--border);margin-top:2px;padding-top:4px"><span>К перечислению</span><span>${fmtMoney(p.forpay)}</span></div>
+      ${row(`Себестоимость (${fmtMoney(p.cogs_unit)}/шт.)`, p.cogs_total, '−')}`;
+  }
   return `<div class="product-card" data-item="${itemKey}">
     <div class="product-top">
       <div class="product-name">${p.title}</div>
@@ -754,6 +785,10 @@ function productCardHtml(p, maxAbsProfit) {
     <div class="copy-chip" data-copy="${itemKey}">${itemKey}</div>
     <div class="product-bar-track"><div class="product-bar-fill ${neg ? 'neg' : ''}" style="width:${barWidth}%"></div></div>
     <div class="product-meta"><span>выручка ${fmtMoney(p.revenue)} · ${p.qty} шт.</span><span>маржа ${p.margin_percent.toFixed(1)}%</span></div>
+    <div class="expense-breakdown">
+      ${expenseRows}
+      <div class="expense-row" style="border-top:1px solid var(--border);margin-top:2px;padding-top:4px"><span>Прибыль</span><span class="${neg ? 'eb-neg' : ''}">${fmtMoney(p.profit)}</span></div>
+    </div>
     <div class="cogs-row">
       <label>Закупка/шт.</label>
       <input type="number" class="cogs-input" value="${p.cogs_unit || ''}" placeholder="0">
