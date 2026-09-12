@@ -421,6 +421,97 @@ def debug_ozon_scan_status(cabinet_id: int, telegram_id: int):
     return _scan_state.get(cabinet_id, {"status": "not started"})
 
 
+async def _run_unit_count_check(cabinet_id: int, date_from: str, date_to: str):
+    state = _scan_state[f"unitcheck_{cabinet_id}"] = {"running": True}
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    cached = ozon_sales_cache.get(cabinet_id)
+    if not cached:
+        state["running"] = False
+        state["error"] = "no cache for this cabinet"
+        return
+    cpostings = cached[0]
+    d_from = _dt.date.fromisoformat(date_from)
+    d_to = _dt.date.fromisoformat(date_to)
+
+    def posting_date(p):
+        ts = p.get("in_process_at") or p.get("created_at") or ""
+        return ts[:10]
+
+    in_range = [p for p in cpostings if date_from <= posting_date(p) <= date_to]
+    status_counts = collections.Counter(p.get("status") for p in in_range)
+    sku_qty_by_status = collections.defaultdict(lambda: collections.Counter())
+    for p in in_range:
+        for prod in p.get("products", []):
+            sku = prod.get("sku")
+            sku_qty_by_status[sku][p.get("status")] += prod.get("quantity") or 0
+
+    client = _build_client(cabinet, ozon_max_retries=1)
+    accrual_unit_count_by_sku = collections.Counter()
+    d = d_from
+    total_accrual_units = 0
+    while d <= d_to:
+        try:
+            accruals = await asyncio.to_thread(client.get_accrual_by_day, d.isoformat())
+        except Exception:
+            accruals = []
+        for a in accruals:
+            if a.get("accrued_category") != "POSTING":
+                continue
+            for prod in ((a.get("posting") or {}).get("products") or []):
+                sku = prod.get("sku")
+                if sku:
+                    accrual_unit_count_by_sku[sku] += 1
+                    total_accrual_units += 1
+        d += _dt.timedelta(days=1)
+        await asyncio.sleep(3)
+
+    mismatches = []
+    for sku, statuses in sku_qty_by_status.items():
+        buyout_qty = sum(q for st, q in statuses.items() if st in ("delivered",))
+        total_qty = sum(statuses.values())
+        accrual_count = accrual_unit_count_by_sku.get(sku, 0)
+        if accrual_count != buyout_qty:
+            mismatches.append({
+                "sku": sku, "buyout_qty": buyout_qty, "total_order_qty": total_qty,
+                "statuses": dict(statuses), "accrual_entries": accrual_count,
+            })
+
+    state.update({
+        "running": False,
+        "postings_in_range": len(in_range),
+        "status_counts": dict(status_counts),
+        "total_accrual_units": total_accrual_units,
+        "distinct_skus_with_mismatch": len(mismatches),
+        "sample_mismatches": mismatches[:20],
+    })
+
+
+@app.get("/api/_debug/ozon-accrual-unit-count-start/{cabinet_id}")
+def debug_ozon_accrual_unit_count_start(cabinet_id: int, telegram_id: int, date_from: str, date_to: str, background_tasks: BackgroundTasks):
+    """TEMPORARY — background version of the buyout-vs-accrual unit-count
+    check (checking whether per_sku_accrual includes units from postings
+    that never became buyouts, which would credit bonus for units with zero
+    counted revenue — Ozon's own realization report explicitly EXCLUDES
+    cancellations/non-buyouts, per docs.ozon.ru). Poll the -status route."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    key = f"unitcheck_{cabinet_id}"
+    if _scan_state.get(key, {}).get("running"):
+        return {"status": "already running"}
+    background_tasks.add_task(_run_unit_count_check, cabinet_id, date_from, date_to)
+    return {"status": "started"}
+
+
+@app.get("/api/_debug/ozon-accrual-unit-count-status/{cabinet_id}")
+def debug_ozon_accrual_unit_count_status(cabinet_id: int, telegram_id: int):
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    return _scan_state.get(f"unitcheck_{cabinet_id}", {"status": "not started"})
+
+
 @app.get("/api/_debug/ozon-posting-sample/{cabinet_id}")
 def debug_ozon_posting_sample(cabinet_id: int, telegram_id: int, date_str: str, limit: int = 5):
     """TEMPORARY — raw POSTING-category accrual entries for one day, to
