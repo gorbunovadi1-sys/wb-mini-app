@@ -346,7 +346,7 @@ def debug_list_cabinets(telegram_id: int):
     if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
         raise HTTPException(status_code=403, detail="admin only")
     from .db import SessionLocal
-    from .models import Cabinet, User
+    from .models import Cabinet, User, OzonSalesCache
     out = []
     with SessionLocal() as session:
         rows = session.query(Cabinet, User).join(User, Cabinet.user_id == User.id).filter(Cabinet.is_active.is_(True)).all()
@@ -361,12 +361,14 @@ def debug_list_cabinets(telegram_id: int):
                 "last_error": c.last_error,
             }
             if c.marketplace == "ozon":
-                cached = ozon_sales_cache.get(c.id)
-                if cached:
-                    entry["cache_period_from"] = cached[3]
-                    entry["cache_is_stale"] = cached[4]
-                    entry["cache_postings_count"] = len(cached[0]) if cached[0] else 0
-                    entry["cache_accrual_entries_count"] = len(cached[1]) if cached[1] else 0
+                cached_row = session.get(OzonSalesCache, c.id)
+                if cached_row:
+                    entry["cache_period_from"] = cached_row.period_from
+                    entry["cache_period_to"] = cached_row.period_to
+                    entry["cache_updated_at"] = str(cached_row.updated_at)
+                    entry["cache_postings_count"] = len(cached_row.postings) if cached_row.postings else 0
+                    entry["cache_accrual_entries_is_null"] = cached_row.accrual_entries is None
+                    entry["cache_accrual_entries_count"] = len(cached_row.accrual_entries) if cached_row.accrual_entries else 0
                 else:
                     entry["cache"] = None
             out.append(entry)
