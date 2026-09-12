@@ -394,14 +394,19 @@ def build_margin_summary(
         _empty_bucket(), prev_totals_buyouts, _empty_bucket(), {},
     )
 
-    # The WIDER "shipped" scope (delivered OR cancelled-after-ship), not the
-    # strict buyout-only one — a cancelled-after-ship posting still incurs
-    # real delivery cost even though it never counts as a sale (its "sale"
-    # fields naturally come out to 0 from Ozon's own accrual, so including
-    # it here doesn't inflate revenue/commission, only correctly picks up
-    # its delivery/item_fees).
-    _, shipped_posting_numbers = accrual_scope_sets(postings)
-    per_sku_accrual = attribute_accrual_entries(entries, shipped_posting_numbers, d_from.isoformat(), d_to.isoformat())
+    # Strict buyout (delivered) scope, not the wider "shipped" one — tried
+    # "shipped" (delivered OR cancelled-after-ship) reasoning a cancelled-
+    # after-ship posting still incurs real delivery cost, but verified live
+    # (per-SKU, cross-checked against her real Юнит-экономика) that her own
+    # per-product "Логистика" figure does NOT include cancelled-after-ship
+    # shipping cost: for "тачка2-02нов", delivery summed from only the
+    # revenue-bearing (real sale) entries was -92,173₽, matching her real
+    # -94,286₽ closely; adding the 17 cancelled-after-ship postings' delivery
+    # on top pushed it to -118,664₽, overshooting by the cancelled-after-
+    # ship amount almost exactly. That extra cost is real Ozon spend, just
+    # not attributed to this product's per-unit economics in her own report.
+    buyout_posting_numbers, _ = accrual_scope_sets(postings)
+    per_sku_accrual = attribute_accrual_entries(entries, buyout_posting_numbers, d_from.isoformat(), d_to.isoformat())
     non_item_total = sum(
         v for k, v in non_item_by_date.items() if d_from.isoformat() <= k <= d_to.isoformat()
     )
