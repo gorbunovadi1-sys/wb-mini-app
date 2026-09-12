@@ -35,10 +35,10 @@ def refresh(client, cabinet_id: int):
     iso_from, iso_to = f"{fetch_from.isoformat()}T00:00:00Z", f"{today.isoformat()}T23:59:59Z"
 
     postings = client.get_fbs_postings(iso_from, iso_to) + client.get_fbo_postings(iso_from, iso_to)
-    buyout_posting_numbers = {
-        p.get("posting_number") for p in postings if p.get("status") in ozon_margin.BUYOUT_STATUSES
-    }
-    accrual_by_date, non_item_by_date = ozon_margin.fetch_accrual_by_date(client, fetch_from, today, buyout_posting_numbers)
+    buyout_posting_numbers, shipped_posting_numbers = ozon_margin.accrual_scope_sets(postings)
+    accrual_by_date, non_item_by_date = ozon_margin.fetch_accrual_by_date(
+        client, fetch_from, today, buyout_posting_numbers, shipped_posting_numbers
+    )
 
     with SessionLocal() as session:
         existing = session.get(OzonSalesCache, cabinet_id)
