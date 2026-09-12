@@ -1,5 +1,16 @@
 from . import cabinets, ozon_margin, ozon_sales_cache
 
+# Below this many units sold in the 60-day window, commission/revenue (and
+# the other per-unit ratios) are too noisy to trust as "the real rate" —
+# verified live: an offer with only a couple of units (one of them
+# apparently carrying an odd accrual, e.g. a partial return) showed a
+# commission% of 76-77% against Ozon's own official category rate card of
+# 51% for that category, and the number visibly drifted between cache
+# refreshes (76.4% → 77.1%) purely from sample-size noise, not a real rate
+# change. Below the threshold, fall back to the estimate (Ozon's quoted
+# category reference rate) instead — see get_pricing_list.
+MIN_QTY_FOR_REAL_RATE = 5
+
 
 def _real_rates_by_offer(cabinet_id: int):
     """Real per-offer commission % and logistics-per-unit, derived from the
@@ -36,6 +47,12 @@ def _real_rates_by_offer(cabinet_id: int):
             continue
         total_acquiring += p["item_fees"]
         total_qty += p["qty"]
+        # The cabinet-wide acquiring average above benefits from every data
+        # point, however small — but a per-offer rate entry below this many
+        # units is excluded entirely (falls through to the estimate in
+        # get_pricing_list) rather than published as "real".
+        if p["qty"] < MIN_QTY_FOR_REAL_RATE:
+            continue
         rates[p["offer_id"]] = {
             "commission_pct": round(p["commission"] / p["revenue"] * 100, 2),
             "logistics_per_unit": round(p["delivery"] / p["qty"], 2),
