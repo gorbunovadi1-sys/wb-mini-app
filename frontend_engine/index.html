@@ -273,12 +273,17 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .price-profit-row .pp-value.pos { color: var(--positive); }
 .price-suggest { font-size: 10.5px; color: var(--text-secondary); margin-top: 4px; }
 .price-suggest b { color: var(--positive); font-family: var(--font-mono); }
-.price-save-row { margin-top: 10px; display: flex; justify-content: flex-end; }
+.price-save-row { margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px; }
 .price-save-btn {
   border: none; border-radius: 8px; padding: 7px 14px; font-family: var(--font); font-size: 11.5px; font-weight: 700; cursor: pointer;
 }
 .price-save-btn.pos { background: var(--accent-gradient); color: var(--accent-text-on); box-shadow: var(--glow); }
 .price-save-btn.staged-btn { background: var(--positive); color: #06281c; }
+.cogs-only-save-btn {
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px 14px; background: transparent; color: var(--text-secondary);
+  font-family: var(--font); font-size: 11.5px; font-weight: 600; cursor: pointer;
+}
+.cogs-only-save-btn:hover { color: var(--text); border-color: var(--text-secondary); }
 .push-bar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; padding: 12px 16px;
   background: var(--surface); border-top: 1px solid var(--accent); display: none; align-items: center; justify-content: space-between;
@@ -1284,7 +1289,10 @@ function priceCardHtml(p) {
       <span class="pp-value profit-out">—</span>
     </div>
     <div class="price-suggest suggest-out"></div>
-    <div class="price-save-row"><button class="price-save-btn">Сохранить</button></div>
+    <div class="price-save-row">
+      <button class="cogs-only-save-btn" title="Сохранить только себестоимость, без отправки цены в Ozon">Сохранить себестоимость</button>
+      <button class="price-save-btn">Сохранить</button>
+    </div>
   </div>`;
 }
 
@@ -1301,6 +1309,7 @@ function bindPriceCard(card) {
   const profitOut = card.querySelector('.profit-out');
   const suggestOut = card.querySelector('.suggest-out');
   const saveBtn = card.querySelector('.price-save-btn');
+  const cogsOnlyBtn = card.querySelector('.cogs-only-save-btn');
   const ebCommission = card.querySelector('.eb-commission');
   const ebLogistics = card.querySelector('.eb-logistics');
   const ebAcquiring = card.querySelector('.eb-acquiring');
@@ -1322,10 +1331,21 @@ function bindPriceCard(card) {
     const profit = row.profit;
 
     if (profit < 0) {
-      const suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 15, taxPct, acquiring);
+      // A 15%-margin target is mathematically unreachable once commission%
+      // + tax% + 15% >= 100% (suggestPrice's denominator goes non-positive)
+      // — happens for real at very high Ozon commission rates. Fall back to
+      // a break-even (0% margin) suggestion instead of just showing nothing.
+      let suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 15, taxPct, acquiring);
+      let label = 'Чтобы выйти в плюс';
+      if (!suggested) {
+        suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 0, taxPct, acquiring);
+        label = 'Чтобы выйти в ноль';
+      }
       if (suggested && suggested > price) {
         const { profit: newProfit } = computePriceRow(suggested, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus);
-        suggestOut.innerHTML = `Чтобы выйти в плюс: цена от <b>${fmtMoney(suggested)}</b> (прибыль ${fmtMoney(newProfit)})`;
+        suggestOut.innerHTML = `${label}: цена от <b>${fmtMoney(suggested)}</b> (прибыль ${fmtMoney(newProfit)})`;
+      } else if (!suggested) {
+        suggestOut.innerHTML = `При комиссии ${commissionPct}%${taxPct ? ' и налоге ' + taxPct + '%' : ''} выйти в плюс невозможно ни по какой цене`;
       } else {
         suggestOut.textContent = '';
       }
@@ -1345,6 +1365,24 @@ function bindPriceCard(card) {
 
   priceInput.addEventListener('input', recalc);
   cogsInput.addEventListener('input', recalc);
+
+  cogsOnlyBtn.addEventListener('click', async () => {
+    const cogs = parseFloat(cogsInput.value) || 0;
+    if (!cogs || cogs < 0) { alert('Укажи закупочную цену за штуку'); return; }
+    cogsOnlyBtn.disabled = true; cogsOnlyBtn.textContent = 'Сохранение…';
+    try {
+      await apiFetch(`/api/cabinets/${activeCabinetId}/cost-prices`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prices: { [offerId]: cogs } }),
+      });
+      cogsOnlyBtn.textContent = 'Сохранено ✓';
+      setTimeout(() => { cogsOnlyBtn.disabled = false; cogsOnlyBtn.textContent = 'Сохранить себестоимость'; }, 1200);
+    } catch (e) {
+      alert('Не удалось сохранить себестоимость: ' + e.message);
+      cogsOnlyBtn.disabled = false; cogsOnlyBtn.textContent = 'Сохранить себестоимость';
+    }
+  });
 
   saveBtn.addEventListener('click', async () => {
     const price = parseFloat(priceInput.value) || 0;
