@@ -336,49 +336,6 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
 
 
 
-@app.get("/api/_debug/ozon-product-detail/{cabinet_id}")
-def debug_ozon_product_detail(cabinet_id: int, telegram_id: int, date_from: str, date_to: str, offer_id: str):
-    """TEMPORARY — dump the full per-product breakdown for one offer_id, to
-    walk Дарья through exactly how a specific product's profit figure was
-    computed. Remove after use."""
-    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
-        raise HTTPException(status_code=403, detail="admin only")
-    cabinet = cabinets.get_cabinet(cabinet_id)
-    if not cabinet or cabinet["marketplace"] != "ozon":
-        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
-    cost_prices = cabinets.get_cost_prices(cabinet_id)
-    tax_pct = cabinet.get("settings", {}).get("tax_pct", 0)
-    cached = ozon_sales_cache.get(cabinet_id)
-    cpostings, caccrual, cnonitem, ccover_from = (cached[0], cached[1], cached[2], cached[3]) if cached else (None, None, None, None)
-    client = _build_client(cabinet, ozon_max_retries=3)
-    result = ozon_margin.build_margin_summary(
-        client=client, cost_prices=cost_prices, date_from=date_from, date_to=date_to, tax_pct=tax_pct,
-        cached_postings=cpostings, cached_accrual_entries=caccrual,
-        cached_non_item_by_date=cnonitem, cache_cover_from=ccover_from,
-    )
-    needle = offer_id.lower().replace(" ", "").replace("-", "")
-    matches = [
-        p for p in result.get("products", [])
-        if needle in (p.get("offer_id") or "").lower().replace(" ", "").replace("-", "")
-        or needle in (p.get("title") or "").lower().replace(" ", "").replace("-", "")
-    ]
-    return {"matches": matches, "tax_pct": tax_pct, "products_count": len(result.get("products", [])), "account": result.get("account")}
-
-
-@app.get("/api/_debug/ozon-force-refresh/{cabinet_id}")
-def debug_ozon_force_refresh(cabinet_id: int, telegram_id: int):
-    """TEMPORARY — force an immediate cache rebuild for one cabinet, so the
-    just-shipped settlement-lag accrual fix shows up in the Дашборд via the
-    fast cached path right away. Remove after use."""
-    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
-        raise HTTPException(status_code=403, detail="admin only")
-    cabinet = cabinets.get_cabinet(cabinet_id)
-    if not cabinet or cabinet["marketplace"] != "ozon":
-        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
-    client = _build_client(cabinet, ozon_max_retries=8)
-    ozon_sales_cache.refresh(client, cabinet_id)
-    return {"status": "refreshed"}
-
 
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
