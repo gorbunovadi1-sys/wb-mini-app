@@ -347,7 +347,7 @@ def debug_ozon_force_refresh(cabinet_id: int, telegram_id: int):
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["marketplace"] != "ozon":
         raise HTTPException(status_code=400, detail="not an Ozon cabinet")
-    client = _build_client(cabinet, ozon_max_retries=3)
+    client = _build_client(cabinet, ozon_max_retries=8)
     ozon_sales_cache.refresh(client, cabinet_id)
     return {"status": "refreshed"}
 
