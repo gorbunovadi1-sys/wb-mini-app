@@ -397,6 +397,25 @@ def debug_list_cabinets(telegram_id: int):
     return {"cabinets": out}
 
 
+@app.get("/api/_debug/raw-commissions")
+def debug_raw_commissions(cabinet_id: int, telegram_id: int, offer_id: str = None):
+    """TEMPORARY — dump the raw `commissions` object Ozon returns for one
+    (or a few) offers, to check whether it exposes per-price-bracket rates
+    (до 100 / свыше 100 до 300 / свыше 300 — Дарья's own rate-card export
+    shows these can differ a lot per category) or only a single rate for
+    whatever the product's current price happens to be. Remove after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=404, detail="ozon cabinet not found")
+    client = _build_client(cabinet, ozon_max_retries=2)
+    prices = client.get_all_prices()
+    if offer_id:
+        prices = [p for p in prices if p.get("offer_id") == offer_id]
+    return {"count": len(prices), "items": prices[:5]}
+
+
 @app.post("/api/_debug/trigger-cache-refresh")
 def debug_trigger_cache_refresh(cabinet_id: int, telegram_id: int, background_tasks: BackgroundTasks):
     """TEMPORARY — manually kick one cabinet's sales-cache refresh right
