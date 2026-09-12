@@ -335,6 +335,23 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
 
 
 
+@app.get("/api/_debug/ozon-return-entry/{cabinet_id}")
+def debug_ozon_return_entry(cabinet_id: int, telegram_id: int, date_str: str, unit_number: str):
+    """TEMPORARY, single call — find the raw accrual entry for a known
+    return event (from Дарья's real August export: "Возвраты" group,
+    "Возврат выручки" type) to see its exact JSON shape, needed to design
+    real returns tracking."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet, ozon_max_retries=2)
+    accruals = client.get_accrual_by_day(date_str)
+    matches = [a for a in accruals if a.get("unit_number") == unit_number]
+    return {"date": date_str, "unit_number": unit_number, "matches_found": len(matches), "entries": matches}
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
