@@ -178,11 +178,13 @@ def _fetch_accrual_for_day(client, date_str: str):
     correlate an accrual entry back to the specific posting it belongs to."""
     entries = []
     non_item_total = 0.0
+    ok = True
     try:
         accruals = client.get_accrual_by_day(date_str)
     except Exception:
         log.exception(f"accrual/by-day failed for {date_str}, treating as empty")
         accruals = []
+        ok = False
     for a in accruals:
         cat = a.get("accrued_category")
         unit_number = a.get("unit_number")
@@ -230,24 +232,35 @@ def _fetch_accrual_for_day(client, date_str: str):
                 })
         elif cat == "NON_ITEM":
             non_item_total += _accrual_amount(a, "non_item_fee", "accrued", "amount")
-    return entries, non_item_total
+    return entries, non_item_total, ok
 
 
 def fetch_accrual_entries(client, date_from: datetime.date, date_to: datetime.date):
     """Flat, un-aggregated per-(posting,sku) accrual records for a date
     range — NOT summed or bucketed by day, because "which day an entry
     happened to post on" is the wrong key for attributing it to a reporting
-    period (see attribute_accrual_entries). One call per day."""
+    period (see attribute_accrual_entries). One call per day.
+
+    A day whose request exhausts its retries (sustained 429s, say) is
+    treated as empty rather than aborting the whole range — that day's
+    isoformat date is collected into the returned `failed_dates` list so a
+    caller (ozon_sales_cache.refresh, in particular) can tell "this window
+    is genuinely all-zero" apart from "this window is mostly-empty because
+    Ozon was unreachable for a chunk of it" and react accordingly (e.g. fall
+    back to a previous cache instead of overwriting it with degraded data)."""
     entries = []
     non_item_by_date = {}
+    failed_dates = []
     d = date_from
     while d <= date_to:
-        day_entries, day_non_item = _fetch_accrual_for_day(client, d.isoformat())
+        day_entries, day_non_item, day_ok = _fetch_accrual_for_day(client, d.isoformat())
         entries.extend(day_entries)
         non_item_by_date[d.isoformat()] = day_non_item
+        if not day_ok:
+            failed_dates.append(d.isoformat())
         d += datetime.timedelta(days=1)
         time.sleep(0.05)
-    return entries, non_item_by_date
+    return entries, non_item_by_date, failed_dates
 
 
 def attribute_accrual_entries(entries: list, buyout_posting_numbers: set, created_posting_numbers: set, period_from: str, period_to: str) -> dict:
@@ -407,7 +420,9 @@ def build_margin_summary(
         entries_fetch_to = min(datetime.date.today(), d_to + datetime.timedelta(days=45))
         entries_fetch_to = max(entries_fetch_to, d_to)
         log.info(f"Fetching accrual entries for {d_from}..{entries_fetch_to} (settlement-lag buffer past {d_to})...")
-        entries, non_item_by_date = fetch_accrual_entries(client, d_from, entries_fetch_to)
+        entries, non_item_by_date, failed_dates = fetch_accrual_entries(client, d_from, entries_fetch_to)
+        if failed_dates:
+            log.warning(f"Accrual fetch had {len(failed_dates)} failed day(s), treated as empty: {failed_dates}")
 
     per_offer_orders = collections.defaultdict(_empty_bucket)
     per_offer_buyouts = collections.defaultdict(_empty_bucket)

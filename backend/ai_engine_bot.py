@@ -15,6 +15,8 @@ from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton
 
 from . import cabinets
 from . import cost_price_import
+from . import ozon_sales_cache
+from . import wb_sales_cache
 from .ozon_client import OzonClient
 from .wb_client import WBClient
 
@@ -26,6 +28,40 @@ MARKETPLACE_LABELS = {"wb": "Wildberries", "ozon": "Ozon"}
 def _is_admin(user_id: int) -> bool:
     admin_id = os.environ.get("ADMIN_TELEGRAM_ID")
     return bool(admin_id) and user_id == int(admin_id)
+
+
+def _kick_off_initial_cache_refresh(marketplace: str, cabinet_id: int, credentials: dict) -> None:
+    """Fires the first cache refresh for a freshly-connected cabinet
+    immediately in the background, instead of leaving it empty until the
+    scheduler's next 3h tick (_refresh_ozon_caches/_refresh_wb_caches in
+    ai_engine_app.py) — otherwise a user who opens Аналитика right after
+    connecting can wait up to 3 hours (or hit the slow, uncached live-fetch
+    fallback) before seeing any data. Fire-and-forget: runs on its own
+    asyncio task so it never blocks the bot's "подключён ✓" reply, and any
+    failure here just gets logged — the scheduled job will pick this
+    cabinet up and retry regardless.
+
+    Builds its own client rather than reusing the one from the interactive
+    onboarding flow: for Ozon specifically, that one was built with the
+    default max_retries=8, fine for the single foreground credentials-check
+    call it made, but too patient (worst case ~165s per call, tying up a
+    shared thread-pool worker) for a background job — max_retries=3 here
+    matches what _refresh_ozon_caches already uses for the same reason
+    (see ai_engine_app.py, and the crash this avoided on 2026-09-12)."""
+
+    async def _run():
+        try:
+            if marketplace == "ozon":
+                client = OzonClient(credentials["client_id"], credentials["api_key"], max_retries=3)
+                await asyncio.to_thread(ozon_sales_cache.refresh, client, cabinet_id)
+            else:
+                client = WBClient(credentials["api_key"])
+                await asyncio.to_thread(wb_sales_cache.refresh, client, cabinet_id)
+            log.info(f"Initial {marketplace} cache refresh done for newly-connected cabinet {cabinet_id}")
+        except Exception:
+            log.exception(f"Initial {marketplace} cache refresh failed for newly-connected cabinet {cabinet_id} — scheduled job will retry")
+
+    asyncio.create_task(_run())
 
 
 class AccessControlMiddleware(BaseMiddleware):
@@ -257,7 +293,8 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
             return
 
         user_id = cabinets.get_or_create_user(message.from_user.id, message.from_user.first_name, message.from_user.username)
-        cabinets.add_cabinet(user_id, "wb", {"api_key": api_key}, display_name=display_name)
+        cabinet_id = cabinets.add_cabinet(user_id, "wb", {"api_key": api_key}, display_name=display_name)
+        _kick_off_initial_cache_refresh("wb", cabinet_id, {"api_key": api_key})
         await state.clear()
         await checking.edit_text(f"Кабинет «{display_name}» (Wildberries) подключён ✓")
         await message.answer(_cabinets_text(user_id), reply_markup=_cabinets_kb(user_id, mini_app_url))
@@ -298,7 +335,8 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
             log.warning("Could not fetch Ozon seller-info for display name, using default")
 
         user_id = cabinets.get_or_create_user(message.from_user.id, message.from_user.first_name, message.from_user.username)
-        cabinets.add_cabinet(user_id, "ozon", {"client_id": client_id, "api_key": api_key}, display_name=display_name)
+        cabinet_id = cabinets.add_cabinet(user_id, "ozon", {"client_id": client_id, "api_key": api_key}, display_name=display_name)
+        _kick_off_initial_cache_refresh("ozon", cabinet_id, {"client_id": client_id, "api_key": api_key})
         await state.clear()
         await checking.edit_text(f"Кабинет «{display_name}» (Ozon) подключён ✓")
         await message.answer(_cabinets_text(user_id), reply_markup=_cabinets_kb(user_id, mini_app_url))
