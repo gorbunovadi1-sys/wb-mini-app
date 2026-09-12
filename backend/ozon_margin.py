@@ -153,9 +153,6 @@ def _fetch_accrual_for_day(client, date_str: str, buyout_posting_numbers: set = 
     category) and account-wide fees not tied to any one product (NON_ITEM).
     Returns ({sku: {commission, delivery, item_fees, bonus}}, non_item_total).
 
-    Two different scopes for a POSTING entry, checked independently (NOT a
-    single skip-the-whole-entry filter):
-
     `buyout_posting_numbers` gates commission/bonus — restricts them to
     postings that are actually buyouts (status=delivered), matching revenue
     (which only ever comes from buyouts). Ozon books a POSTING accrual entry
@@ -164,23 +161,25 @@ def _fetch_accrual_for_day(client, date_str: str, buyout_posting_numbers: set = 
     several accrual entries. Left unfiltered, those credited commission/
     bonus for units with zero counted revenue. Matches Ozon's own official
     `/v2/finance/realization`, which explicitly excludes cancellations.
+    `None` means "don't filter" — used only where a caller can't supply the
+    set (keeps this function safe to call standalone).
 
-    `shipped_posting_numbers` gates delivery instead — a WIDER scope
-    (delivered OR cancelled after shipment) than buyouts, because Ozon
-    charges real logistics cost for a posting the moment it ships,
-    regardless of whether the customer ultimately keeps it. Confirmed live
-    on cabinet "Строй Мир", August 2026: buyout-only delivery totaled
-    97,165₽ vs her real "Услуги доставки" of 197,482₽; re-scoping to
-    delivered+cancelled-after-ship gave 208,291₽ — a close match, while
-    buyout-only was less than half. Using the buyout scope for delivery too
-    was the single largest remaining piece of the Дашборд-vs-real-balance
-    gap after the revenue and commission/bonus fixes.
+    Delivery is deliberately NEVER filtered by posting status — tried
+    scoping it to "delivered OR cancelled-after-ship" first (reasoning: Ozon
+    charges real logistics cost once a posting ships, regardless of outcome)
+    via `shipped_posting_numbers` (kept as a parameter for compatibility,
+    but no longer read here), but that undercounted badly: only 68 postings
+    were flagged `cancelled_after_ship` on cabinet "Строй Мир"/August 2026,
+    while real "Услуги доставки" was -197,482₽ vs a fully-unfiltered sum of
+    -208,291₽ — trusting that Ozon only books a delivery entry when it
+    actually incurred the cost matched far better than guessing from posting
+    status. Using the buyout scope for delivery too (an earlier attempt) was
+    the single largest remaining piece of the Дашборд-vs-real-balance gap
+    after the revenue and commission/bonus fixes.
 
-    Both are `None` by default, meaning "don't filter" — used only where a
-    caller can't supply the sets (keeps this function safe to call
-    standalone). The entry's top-level `unit_number` field is confirmed
-    (live, exact match against cached `posting_number` values) to just be
-    the posting_number under another name.
+    The entry's top-level `unit_number` field is confirmed (live, exact
+    match against cached `posting_number` values) to just be the
+    posting_number under another name.
 
     Keys are always str(sku) — this dict gets cached through a Postgres JSON
     column, which silently turns int keys into strings on the way back out,
@@ -211,9 +210,6 @@ def _fetch_accrual_for_day(client, date_str: str, buyout_posting_numbers: set = 
         if cat == "POSTING":
             unit_number = a.get("unit_number")
             is_buyout_entry = buyout_posting_numbers is None or unit_number in buyout_posting_numbers
-            is_shipped_entry = shipped_posting_numbers is None or unit_number in shipped_posting_numbers
-            if not is_buyout_entry and not is_shipped_entry:
-                continue
             for prod in ((a.get("posting") or {}).get("products") or []):
                 sku = prod.get("sku")
                 if not sku:
@@ -224,8 +220,16 @@ def _fetch_accrual_for_day(client, date_str: str, buyout_posting_numbers: set = 
                 if is_buyout_entry:
                     per_sku[sku]["commission"] += _accrual_amount(commission, "commission", "amount")
                     per_sku[sku]["bonus"] += _accrual_amount(commission, "bonus", "amount") + _accrual_amount(commission, "coinvestment", "amount")
-                if is_shipped_entry:
-                    per_sku[sku]["delivery"] += _accrual_amount(delivery, "total_accrued", "amount")
+                # Delivery is NEVER filtered by posting status — Ozon only
+                # books a delivery accrual entry when it actually incurred
+                # the cost (confirmed live: an unfiltered sum came out to
+                # -208,291₽ vs the real "Услуги доставки" of -197,482₽, a
+                # close match; trying to predict which cancelled postings
+                # have real shipping cost via `cancelled_after_ship` badly
+                # undercounted — only 68 postings flagged, leaving most of
+                # the real cost unaccounted for). Trust the entry's own
+                # presence as the signal, not our guess about posting status.
+                per_sku[sku]["delivery"] += _accrual_amount(delivery, "total_accrued", "amount")
         elif cat == "ITEM":
             for fee_group in ((a.get("item_fees") or {}).get("fees") or []):
                 sku = fee_group.get("sku")
