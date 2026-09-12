@@ -421,6 +421,38 @@ def debug_ozon_scan_status(cabinet_id: int, telegram_id: int):
     return _scan_state.get(cabinet_id, {"status": "not started"})
 
 
+@app.get("/api/_debug/ozon-posting-sample/{cabinet_id}")
+def debug_ozon_posting_sample(cabinet_id: int, telegram_id: int, date_str: str, limit: int = 5):
+    """TEMPORARY — raw POSTING-category accrual entries for one day, to
+    manually inspect the commission object's seller_price/commission/bonus/
+    coinvestment fields on real orders — bonus turned out to be ~38% of
+    August revenue (almost as large as commission itself), which is
+    implausible for a real per-sale discount subsidy and needs eyes-on
+    verification before touching the formula again."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet, ozon_max_retries=2)
+    accruals = client.get_accrual_by_day(date_str)
+    samples = []
+    for a in accruals:
+        if a.get("accrued_category") != "POSTING":
+            continue
+        for prod in ((a.get("posting") or {}).get("products") or []):
+            samples.append({
+                "sku": prod.get("sku"),
+                "commission": prod.get("commission"),
+                "delivery": prod.get("delivery"),
+            })
+            if len(samples) >= limit:
+                break
+        if len(samples) >= limit:
+            break
+    return {"date": date_str, "postings_scanned": len(accruals), "samples": samples}
+
+
 @app.get("/api/_debug/ozon-august-totals/{cabinet_id}")
 def debug_ozon_august_totals(cabinet_id: int, telegram_id: int, date_from: str, date_to: str):
     """TEMPORARY — dump our own computed account totals for a period straight
