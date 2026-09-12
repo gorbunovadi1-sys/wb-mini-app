@@ -834,7 +834,13 @@ class NoCacheHtmlStaticFiles(StaticFiles):
     using that copy WITHOUT checking first."""
     async def get_response(self, path, scope):
         response = await super().get_response(path, scope)
-        if path == "" or path.endswith(".html"):
+        # Checking the response's own Content-Type rather than `path` —
+        # for the root URL Starlette normalizes `path` to "." (not "" or
+        # "index.html"), which silently never matched a path-based check
+        # here and meant this class did nothing for the one route that
+        # actually mattered (verified live: the header was still missing
+        # after first shipping the path-based version of this check).
+        if response.headers.get("content-type", "").startswith("text/html"):
             response.headers["Cache-Control"] = "no-cache"
         return response
 
