@@ -338,6 +338,41 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
 
 
 
+@app.get("/api/_debug/list-cabinets")
+def debug_list_cabinets(telegram_id: int):
+    """TEMPORARY — list every cabinet with id + sync status + Ozon cache
+    freshness, to find which one is stuck failing to load. Remove after
+    use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    from .db import SessionLocal
+    from .models import Cabinet, User
+    out = []
+    with SessionLocal() as session:
+        rows = session.query(Cabinet, User).join(User, Cabinet.user_id == User.id).filter(Cabinet.is_active.is_(True)).all()
+        for c, u in rows:
+            entry = {
+                "id": c.id,
+                "owner_telegram_id": u.telegram_user_id,
+                "owner_username": u.username,
+                "marketplace": c.marketplace,
+                "display_name": c.display_name,
+                "last_synced_at": str(c.last_synced_at) if c.last_synced_at else None,
+                "last_error": c.last_error,
+            }
+            if c.marketplace == "ozon":
+                cached = ozon_sales_cache.get(c.id)
+                if cached:
+                    entry["cache_period_from"] = cached[3]
+                    entry["cache_is_stale"] = cached[4]
+                    entry["cache_postings_count"] = len(cached[0]) if cached[0] else 0
+                    entry["cache_accrual_entries_count"] = len(cached[1]) if cached[1] else 0
+                else:
+                    entry["cache"] = None
+            out.append(entry)
+    return {"cabinets": out}
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
