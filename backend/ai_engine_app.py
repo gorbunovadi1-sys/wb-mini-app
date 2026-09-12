@@ -353,6 +353,30 @@ def debug_ozon_force_refresh(cabinet_id: int, telegram_id: int):
     return {"status": "refreshed"}
 
 
+@app.get("/api/_debug/ozon-product-detail/{cabinet_id}")
+def debug_ozon_product_detail(cabinet_id: int, telegram_id: int, needle: str, date_from: str, date_to: str):
+    """TEMPORARY — re-verify one product's margin breakdown against the
+    cached data, after the delivery forward/reverse split. Remove after
+    use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet, ozon_max_retries=3)
+    cost_prices = cabinets.get_cost_prices(cabinet_id)
+    tax_pct = cabinet.get("settings", {}).get("tax_pct", 0)
+    cached = ozon_sales_cache.get(cabinet_id)
+    cpostings, caccrual, cnonitem, ccover_from = (cached[0], cached[1], cached[2], cached[3]) if cached else (None, None, None, None)
+    summary = ozon_margin.build_margin_summary(
+        client=client, cost_prices=cost_prices, date_from=date_from, date_to=date_to, tax_pct=tax_pct,
+        cached_postings=cpostings, cached_accrual_entries=caccrual,
+        cached_non_item_by_date=cnonitem, cache_cover_from=ccover_from,
+    )
+    matches = [p for p in summary.get("products", []) if needle.lower() in str(p.get("offer_id", "")).lower()]
+    return {"matches": matches, "totals": {k: v for k, v in summary.items() if k != "products"}}
+
+
 @app.get("/api/_debug/ozon-delivery-breakdown/{cabinet_id}")
 def debug_ozon_delivery_breakdown(cabinet_id: int, telegram_id: int, date_str: str, unit_number: str):
     """TEMPORARY — raw delivery.services breakdown (by type_id) for one
