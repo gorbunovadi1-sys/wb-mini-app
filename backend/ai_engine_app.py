@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -8,7 +9,7 @@ import requests
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -334,34 +335,55 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
 
 
 
-@app.get("/api/_debug/ozon-posting-number-field/{cabinet_id}")
-def debug_ozon_posting_number_field(cabinet_id: int, telegram_id: int, date_str: str):
-    """TEMPORARY, single call — confirms the exact field name for a
-    POSTING-category accrual entry's posting identifier, needed to filter
-    per_sku_accrual by buyout status. Remove right after use."""
+_fix_verify_state = {}
+
+
+async def _run_fixed_totals(cabinet_id: int, date_from: str, date_to: str):
+    """Background task — recomputes account totals for a period using the
+    just-shipped buyout-filtered accrual code (bypassing the cache, which
+    still holds pre-fix unfiltered data until its next scheduled refresh),
+    so the before/after can be compared directly against the real Ozon
+    balance before the fix is trusted."""
+    state = _fix_verify_state[cabinet_id] = {"running": True}
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    cost_prices = cabinets.get_cost_prices(cabinet_id)
+    tax_pct = cabinet.get("settings", {}).get("tax_pct", 0)
+    client = _build_client(cabinet, ozon_max_retries=2)
+    try:
+        # Deliberately no cached_* args — forces the live path, which uses
+        # the just-shipped buyout-filtering fix. The cache itself still
+        # holds pre-fix data until its next scheduled refresh.
+        result = await asyncio.to_thread(
+            ozon_margin.build_margin_summary,
+            client=client, cost_prices=cost_prices, date_from=date_from, date_to=date_to, tax_pct=tax_pct,
+        )
+        state["account"] = result.get("account", {})
+        state["error"] = None
+    except Exception as e:
+        state["error"] = str(e)
+    state["running"] = False
+
+
+@app.get("/api/_debug/ozon-fixed-totals-start/{cabinet_id}")
+def debug_ozon_fixed_totals_start(cabinet_id: int, telegram_id: int, date_from: str, date_to: str, background_tasks: BackgroundTasks):
+    """TEMPORARY — kick off _run_fixed_totals in the background. Poll the
+    -status route. Remove both once the fix is verified and shipped."""
     if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
         raise HTTPException(status_code=403, detail="admin only")
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["marketplace"] != "ozon":
         raise HTTPException(status_code=400, detail="not an Ozon cabinet")
-    client = _build_client(cabinet, ozon_max_retries=1)
-    accruals = client.get_accrual_by_day(date_str)
-    unit_numbers = [a.get("unit_number") for a in accruals if a.get("accrued_category") == "POSTING"]
-    cached = ozon_sales_cache.get(cabinet_id)
-    cpostings = cached[0] if cached else []
-    all_posting_numbers = {p.get("posting_number") for p in cpostings}
-    exact_matches = [u for u in unit_numbers if u in all_posting_numbers]
-    # unit_number might be posting_number + "-<item index>" instead of an
-    # exact match — check prefix matches against posting_number too.
-    prefix_matches = [u for u in unit_numbers if any(u.startswith(pn + "-") for pn in all_posting_numbers if pn)]
-    return {
-        "unit_numbers_checked": len(unit_numbers),
-        "cached_posting_numbers_count": len(all_posting_numbers),
-        "exact_matches": len(exact_matches),
-        "prefix_matches": len(prefix_matches),
-        "sample_unit_numbers": unit_numbers[:8],
-        "sample_cached_posting_numbers": list(all_posting_numbers)[:8],
-    }
+    if _fix_verify_state.get(cabinet_id, {}).get("running"):
+        return {"status": "already running"}
+    background_tasks.add_task(_run_fixed_totals, cabinet_id, date_from, date_to)
+    return {"status": "started"}
+
+
+@app.get("/api/_debug/ozon-fixed-totals-status/{cabinet_id}")
+def debug_ozon_fixed_totals_status(cabinet_id: int, telegram_id: int):
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    return _fix_verify_state.get(cabinet_id, {"status": "not started"})
 
 
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:

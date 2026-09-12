@@ -89,13 +89,27 @@ def _accrual_amount(obj, *path):
         return 0.0
 
 
-def _fetch_accrual_for_day(client, date_str: str):
+def _fetch_accrual_for_day(client, date_str: str, buyout_posting_numbers: set = None):
     """One day's accrual breakdown: real per-SKU commission + delivery (from
     accrual/by-day's POSTING category — the seller_price/commission/
     delivery.total_accrued triple reconciles exactly to what Ozon actually
     paid out, verified live) plus per-SKU other item-level fees (ITEM
     category) and account-wide fees not tied to any one product (NON_ITEM).
     Returns ({sku: {commission, delivery, item_fees, bonus}}, non_item_total).
+
+    `buyout_posting_numbers`, when given, restricts POSTING-category entries
+    to postings that are actually buyouts (status=delivered) — Ozon books a
+    POSTING accrual entry (commission/bonus/delivery) for essentially every
+    order attempt, cancelled ones included, confirmed live: a SKU whose only
+    order was cancelled (0 buyout qty) still had several accrual entries.
+    Left unfiltered, those contributed commission/bonus for units with zero
+    counted revenue (revenue only ever comes from buyouts) — Ozon's own
+    official `/v2/finance/realization` report explicitly excludes
+    cancellations/non-buyouts for the same reason. The entry's top-level
+    `unit_number` field is confirmed (live, exact match against cached
+    `posting_number` values) to just be the posting_number under another
+    name. `None` means "don't filter" — used only where the caller can't
+    supply the set (keeps this function safe to call standalone).
     Keys are always str(sku) — this dict gets cached through a Postgres JSON
     column, which silently turns int keys into strings on the way back out,
     so keeping them as ints here would make every cached lookup miss (which
@@ -123,6 +137,8 @@ def _fetch_accrual_for_day(client, date_str: str):
     for a in accruals:
         cat = a.get("accrued_category")
         if cat == "POSTING":
+            if buyout_posting_numbers is not None and a.get("unit_number") not in buyout_posting_numbers:
+                continue
             for prod in ((a.get("posting") or {}).get("products") or []):
                 sku = prod.get("sku")
                 if not sku:
@@ -146,14 +162,14 @@ def _fetch_accrual_for_day(client, date_str: str):
     return dict(per_sku), non_item_total
 
 
-def _fetch_accrual_breakdown(client, date_from: datetime.date, date_to: datetime.date):
+def _fetch_accrual_breakdown(client, date_from: datetime.date, date_to: datetime.date, buyout_posting_numbers: set = None):
     """Real per-SKU commission/delivery/fees/bonus summed over a date range —
     one call per day, used for the live (uncached) path."""
     per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
     non_item_total = 0.0
     d = date_from
     while d <= date_to:
-        day_sku, day_non_item = _fetch_accrual_for_day(client, d.isoformat())
+        day_sku, day_non_item = _fetch_accrual_for_day(client, d.isoformat(), buyout_posting_numbers)
         for sku, vals in day_sku.items():
             per_sku[sku]["commission"] += vals["commission"]
             per_sku[sku]["delivery"] += vals["delivery"]
@@ -165,7 +181,7 @@ def _fetch_accrual_breakdown(client, date_from: datetime.date, date_to: datetime
     return per_sku, non_item_total
 
 
-def fetch_accrual_by_date(client, date_from: datetime.date, date_to: datetime.date):
+def fetch_accrual_by_date(client, date_from: datetime.date, date_to: datetime.date, buyout_posting_numbers: set = None):
     """Same per-day accrual fetch, but keeps each day separate instead of
     summing — lets a cached window be sliced to any sub-range later. Used by
     ozon_sales_cache.refresh(), not the live per-request path."""
@@ -173,7 +189,7 @@ def fetch_accrual_by_date(client, date_from: datetime.date, date_to: datetime.da
     non_item_by_date = {}
     d = date_from
     while d <= date_to:
-        day_sku, day_non_item = _fetch_accrual_for_day(client, d.isoformat())
+        day_sku, day_non_item = _fetch_accrual_for_day(client, d.isoformat(), buyout_posting_numbers)
         accrual_by_date[d.isoformat()] = day_sku
         non_item_by_date[d.isoformat()] = day_non_item
         d += datetime.timedelta(days=1)
@@ -281,10 +297,13 @@ def build_margin_summary(
     )
 
     if use_cache:
+        # Cached accrual_by_date is already buyout-filtered at cache-build
+        # time (see ozon_sales_cache.refresh) — no further filtering needed.
         per_sku_accrual, non_item_total = _slice_accrual_by_date(cached_accrual_by_date, cached_non_item_by_date, d_from, d_to)
     else:
         log.info(f"Fetching accrual breakdown (commission, delivery, fees) for {d_from}..{d_to}...")
-        per_sku_accrual, non_item_total = _fetch_accrual_breakdown(client, d_from, d_to)
+        buyout_posting_numbers = {p.get("posting_number") for p in postings if p.get("status") in BUYOUT_STATUSES}
+        per_sku_accrual, non_item_total = _fetch_accrual_breakdown(client, d_from, d_to, buyout_posting_numbers)
     other_fees_cost = abs(non_item_total)
 
     # Roll per-SKU accrual up to per-offer (an offer normally maps to one SKU;
