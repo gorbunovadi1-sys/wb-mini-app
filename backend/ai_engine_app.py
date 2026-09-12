@@ -352,7 +352,7 @@ def debug_ozon_product_detail(cabinet_id: int, telegram_id: int, date_from: str,
     cpostings, caccrual, cnonitem, ccover_from = (cached[0], cached[1], cached[2], cached[3]) if cached else (None, None, None, None)
     result = ozon_margin.build_margin_summary(
         client=None, cost_prices=cost_prices, date_from=date_from, date_to=date_to, tax_pct=tax_pct,
-        cached_postings=cpostings, cached_accrual_by_date=caccrual,
+        cached_postings=cpostings, cached_accrual_entries=caccrual,
         cached_non_item_by_date=cnonitem, cache_cover_from=ccover_from,
     )
     needle = offer_id.lower().replace(" ", "").replace("-", "")
@@ -361,47 +361,7 @@ def debug_ozon_product_detail(cabinet_id: int, telegram_id: int, date_from: str,
         if needle in (p.get("offer_id") or "").lower().replace(" ", "").replace("-", "")
         or needle in (p.get("title") or "").lower().replace(" ", "").replace("-", "")
     ]
-
-    # DIAGNOSTIC: test whether accrual for August-created deliveries is
-    # settling with a lag into September — fetch accrual for a WIDER date
-    # range (through today) but keep the buyout scope strictly to postings
-    # created within [date_from, date_to], to see if revenue/commission for
-    # this offer moves closer to the real numbers once late entries are
-    # included.
-    import datetime as _dt
-    d_from = _dt.date.fromisoformat(date_from)
-    d_to = _dt.date.fromisoformat(date_to)
-    today = _dt.date.today()
-    wide_postings = ozon_margin._slice_postings(cpostings, d_from, d_to) if cpostings else []
-    buyout_posting_numbers, shipped_posting_numbers = ozon_margin.accrual_scope_sets(cpostings or [])
-    august_only_buyouts = {p.get("posting_number") for p in wide_postings if p.get("status") in ozon_margin.BUYOUT_STATUSES}
-    client = _build_client(cabinet, ozon_max_retries=2)
-    wide_per_sku, _ = ozon_margin._fetch_accrual_breakdown(client, d_from, today, august_only_buyouts, august_only_buyouts)
-    target_offer = matches[0]["offer_id"] if matches else None
-    target_skus = [str(sku) for sku, off in ({} if not cpostings else _build_sku_map(cpostings)).items() if off == target_offer] if target_offer else []
-    wide_revenue = sum(wide_per_sku.get(sku, {}).get("revenue", 0.0) for sku in target_skus)
-    wide_commission = sum(wide_per_sku.get(sku, {}).get("commission", 0.0) for sku in target_skus)
-
-    return {
-        "matches": matches, "tax_pct": tax_pct, "products_count": len(result.get("products", [])),
-        "diagnostic_wide_accrual_through_today": {
-            "date_range_used": f"{date_from}..{today.isoformat()}",
-            "target_skus": target_skus,
-            "wide_revenue": round(wide_revenue, 2),
-            "wide_commission": round(wide_commission, 2),
-        },
-    }
-
-
-def _build_sku_map(postings):
-    m = {}
-    for p in postings:
-        for prod in p.get("products", []):
-            sku = prod.get("sku")
-            offer_id = prod.get("offer_id")
-            if sku and offer_id:
-                m[sku] = offer_id
-    return m
+    return {"matches": matches, "tax_pct": tax_pct, "products_count": len(result.get("products", []))}
 
 
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
@@ -454,7 +414,7 @@ def get_cabinet_margin(
         cpostings, caccrual, cnonitem, ccover_from = (cached[0], cached[1], cached[2], cached[3]) if cached else (None, None, None, None)
         return ozon_margin.build_margin_summary(
             client=client, cost_prices=cost_prices, days=days, date_from=date_from, date_to=date_to, tax_pct=tax_pct,
-            cached_postings=cpostings, cached_accrual_by_date=caccrual,
+            cached_postings=cpostings, cached_accrual_entries=caccrual,
             cached_non_item_by_date=cnonitem, cache_cover_from=ccover_from,
         )
     except requests.exceptions.HTTPError as e:

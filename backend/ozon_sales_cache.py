@@ -24,10 +24,19 @@ RECENTLY_REFRESHED_WITHIN = datetime.timedelta(minutes=30)
 
 
 def refresh(client, cabinet_id: int):
-    """Fetches the last WINDOW_DAYS of raw FBS+FBO postings and per-day
-    accrual breakdown from Ozon and overwrites this cabinet's cache. Called
-    by the background scheduler, not per-request — this is the same fetch
-    ozon_margin.build_margin_summary used to do live on every tab open."""
+    """Fetches the last WINDOW_DAYS of raw FBS+FBO postings and flat accrual
+    entries from Ozon and overwrites this cabinet's cache. Called by the
+    background scheduler, not per-request — this is the same fetch
+    ozon_margin.build_margin_summary used to do live on every tab open.
+
+    Fetching accrual entries all the way through `today` (not just to
+    WINDOW_DAYS worth of postings) is what makes this immune to Ozon's
+    settlement lag for the CACHED path specifically — a sale near the end of
+    whatever period gets requested later will have had its accrual land
+    somewhere in this window by the time this ran, since the window's upper
+    edge is always "now". See ozon_margin.attribute_accrual_entries for how
+    a requested sub-period then correctly pulls the right entries back out
+    of this un-sliced pool."""
     from . import ozon_margin  # local import: avoid a cycle at module load
 
     today = datetime.date.today()
@@ -35,27 +44,24 @@ def refresh(client, cabinet_id: int):
     iso_from, iso_to = f"{fetch_from.isoformat()}T00:00:00Z", f"{today.isoformat()}T23:59:59Z"
 
     postings = client.get_fbs_postings(iso_from, iso_to) + client.get_fbo_postings(iso_from, iso_to)
-    buyout_posting_numbers, shipped_posting_numbers = ozon_margin.accrual_scope_sets(postings)
-    accrual_by_date, non_item_by_date = ozon_margin.fetch_accrual_by_date(
-        client, fetch_from, today, buyout_posting_numbers, shipped_posting_numbers
-    )
+    accrual_entries, non_item_by_date = ozon_margin.fetch_accrual_entries(client, fetch_from, today)
 
     with SessionLocal() as session:
         existing = session.get(OzonSalesCache, cabinet_id)
         if existing:
             existing.postings = postings
-            existing.accrual_by_date = accrual_by_date
+            existing.accrual_entries = accrual_entries
             existing.non_item_by_date = non_item_by_date
             existing.period_from = fetch_from.isoformat()
             existing.period_to = today.isoformat()
         else:
             session.add(OzonSalesCache(
                 cabinet_id=cabinet_id, postings=postings,
-                accrual_by_date=accrual_by_date, non_item_by_date=non_item_by_date,
+                accrual_entries=accrual_entries, non_item_by_date=non_item_by_date,
                 period_from=fetch_from.isoformat(), period_to=today.isoformat(),
             ))
         session.commit()
-    log.info(f"Refreshed Ozon sales cache for cabinet {cabinet_id}: {len(postings)} postings, {len(accrual_by_date)} accrual days")
+    log.info(f"Refreshed Ozon sales cache for cabinet {cabinet_id}: {len(postings)} postings, {len(accrual_entries)} accrual entries")
 
 
 def refreshed_recently(cabinet_id: int) -> bool:
@@ -69,10 +75,10 @@ def refreshed_recently(cabinet_id: int) -> bool:
 
 
 def get(cabinet_id: int):
-    """Returns (postings, accrual_by_date, non_item_by_date, period_from, is_stale) or None."""
+    """Returns (postings, accrual_entries, non_item_by_date, period_from, is_stale) or None."""
     with SessionLocal() as session:
         cached = session.get(OzonSalesCache, cabinet_id)
         if not cached:
             return None
         is_stale = datetime.datetime.utcnow() - cached.updated_at > STALE_AFTER
-        return cached.postings, cached.accrual_by_date, cached.non_item_by_date, cached.period_from, is_stale
+        return cached.postings, cached.accrual_entries, cached.non_item_by_date, cached.period_from, is_stale

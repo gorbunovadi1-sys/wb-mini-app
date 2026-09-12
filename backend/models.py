@@ -73,7 +73,12 @@ class OzonSalesCache(Base):
 
     cabinet_id = Column(Integer, ForeignKey("cabinets.id"), primary_key=True)
     postings = Column(JSON, nullable=False)
-    accrual_by_date = Column(JSON, nullable=False)  # {date: {sku: {commission, delivery, item_fees}}}
+    # Flat list of raw per-(posting,sku) accrual entries — see
+    # ozon_margin.fetch_accrual_entries/attribute_accrual_entries. Nullable
+    # (not the old accrual_by_date's NOT NULL) so a pre-redesign cache row
+    # reads back as None and build_margin_summary's use_cache check falls
+    # through to a live fetch instead of misinterpreting old-format data.
+    accrual_entries = Column(JSON, nullable=True)
     non_item_by_date = Column(JSON, nullable=False)  # {date: float}
     period_from = Column(String, nullable=False)
     period_to = Column(String, nullable=False)

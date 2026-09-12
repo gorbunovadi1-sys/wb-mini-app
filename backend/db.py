@@ -37,6 +37,7 @@ def _migrate():
         f"ALTER TABLE users ADD COLUMN is_blocked BOOLEAN NOT NULL DEFAULT {bool_default}",
         "ALTER TABLE users ADD COLUMN access_until TIMESTAMP",
         "ALTER TABLE users ADD COLUMN max_cabinets INTEGER",
+        "ALTER TABLE ozon_sales_cache ADD COLUMN accrual_entries JSON",
     ]
     with engine.connect() as conn:
         for stmt in statements:

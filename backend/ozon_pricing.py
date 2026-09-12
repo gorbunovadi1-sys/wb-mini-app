@@ -24,7 +24,7 @@ def _real_rates_by_offer(cabinet_id: int):
     try:
         result = ozon_margin.build_margin_summary(
             client=None, cost_prices={}, days=60,
-            cached_postings=cpostings, cached_accrual_by_date=caccrual,
+            cached_postings=cpostings, cached_accrual_entries=caccrual,
             cached_non_item_by_date=cnonitem, cache_cover_from=ccover_from,
         )
     except Exception:
