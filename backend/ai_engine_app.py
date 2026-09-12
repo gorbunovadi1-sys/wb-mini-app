@@ -349,7 +349,13 @@ def debug_ozon_posting_number_field(cabinet_id: int, telegram_id: int, date_str:
     for a in accruals:
         if a.get("accrued_category") == "POSTING":
             posting = a.get("posting") or {}
-            return {"posting_keys": list(posting.keys()), "posting_sample": {k: v for k, v in posting.items() if k != "products"}}
+            prod = (posting.get("products") or [{}])[0]
+            return {
+                "top_level_keys": list(a.keys()),
+                "top_level_sample": {k: v for k, v in a.items() if k != "posting"},
+                "posting_keys": list(posting.keys()),
+                "product_keys": list(prod.keys()),
+            }
     return {"found": False}
 
 
