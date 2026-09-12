@@ -201,6 +201,23 @@ async def _refresh_wb_caches(skip_if_fresh: bool = False):
             log.exception(f"WB sales cache refresh failed for cabinet {cabinet['id']}")
 
 
+# Hard ceiling on how long a single cabinet's background refresh may run.
+# Observed live (2026-09-13): under Ozon's sustained rate limiting, the hot
+# window's per-day accrual calls (up to 45 of them, each retried up to 3x
+# with escalating backoff) can each burn ~30s worst case — enough bad days
+# in a row stretches one cabinet's refresh to several minutes. Railway's
+# own memory metric showed the process reporting the exact same value for
+# 4+ minutes straight (a stall, not just slow), its health check decided
+# the app was unresponsive, and killed the instance ("Application failed
+# to respond") even though CPU/memory were nowhere near their limits — this
+# was a hang, not a resource shortage. asyncio.wait_for can't force-kill
+# the underlying thread (Python threads aren't cancellable), but it stops
+# THIS loop from ever waiting on one stuck cabinet indefinitely, so a
+# lingering thread from a bad cabinet no longer blocks every other
+# cabinet's turn or delays the loop's own progress.
+CABINET_REFRESH_TIMEOUT_SECONDS = 90
+
+
 async def _refresh_ozon_caches(skip_if_fresh: bool = False):
     """Runs periodically: re-fetches Ozon FBS+FBO postings and per-day
     accrual breakdown for every active Ozon cabinet into ozon_sales_cache, so
@@ -225,7 +242,12 @@ async def _refresh_ozon_caches(skip_if_fresh: bool = False):
             # enough, across several cabinets in a row, to crash the single
             # Railway instance (observed live twice on 2026-09-12).
             client = OzonClient(cabinet["credentials"]["client_id"], cabinet["credentials"]["api_key"], max_retries=3)
-            await asyncio.to_thread(ozon_sales_cache.refresh, client, cabinet["id"])
+            await asyncio.wait_for(
+                asyncio.to_thread(ozon_sales_cache.refresh, client, cabinet["id"]),
+                timeout=CABINET_REFRESH_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            log.warning(f"Ozon sales cache refresh for cabinet {cabinet['id']} exceeded {CABINET_REFRESH_TIMEOUT_SECONDS}s — moving on, will retry next cycle")
         except Exception:
             log.exception(f"Ozon sales cache refresh failed for cabinet {cabinet['id']}")
         await asyncio.sleep(3)  # small gap between cabinets — avoids a startup burst across many cabinets at once
@@ -392,14 +414,18 @@ def debug_trigger_cache_refresh(cabinet_id: int, telegram_id: int, background_ta
     if not cabinet:
         raise HTTPException(status_code=404, detail="cabinet not found")
 
-    def _run():
+    async def _run():
         try:
             client = _build_client(cabinet, ozon_max_retries=3) if cabinet["marketplace"] == "ozon" else _build_client(cabinet)
             if cabinet["marketplace"] == "ozon":
-                ozon_sales_cache.refresh(client, cabinet_id)
+                # Same 90s ceiling as the scheduled job (CABINET_REFRESH_TIMEOUT_SECONDS)
+                # — see that constant's comment for the hang this guards against.
+                await asyncio.wait_for(asyncio.to_thread(ozon_sales_cache.refresh, client, cabinet_id), timeout=CABINET_REFRESH_TIMEOUT_SECONDS)
             else:
-                wb_sales_cache.refresh(client, cabinet_id)
+                await asyncio.to_thread(wb_sales_cache.refresh, client, cabinet_id)
             log.info(f"Manually-triggered cache refresh done for cabinet {cabinet_id}")
+        except asyncio.TimeoutError:
+            log.warning(f"Manually-triggered cache refresh for cabinet {cabinet_id} exceeded {CABINET_REFRESH_TIMEOUT_SECONDS}s")
         except Exception:
             log.exception(f"Manually-triggered cache refresh failed for cabinet {cabinet_id}")
 

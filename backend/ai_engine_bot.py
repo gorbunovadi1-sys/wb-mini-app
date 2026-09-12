@@ -53,11 +53,19 @@ def _kick_off_initial_cache_refresh(marketplace: str, cabinet_id: int, credentia
         try:
             if marketplace == "ozon":
                 client = OzonClient(credentials["client_id"], credentials["api_key"], max_retries=3)
-                await asyncio.to_thread(ozon_sales_cache.refresh, client, cabinet_id)
+                # Same 90s ceiling as ai_engine_app.CABINET_REFRESH_TIMEOUT_SECONDS —
+                # under sustained Ozon rate limiting this call can otherwise run
+                # for several minutes (observed live 2026-09-13, see that
+                # constant's comment for the full incident); WB has no such
+                # timeout since its 15-20min runtime under throttling is
+                # expected, not a hang.
+                await asyncio.wait_for(asyncio.to_thread(ozon_sales_cache.refresh, client, cabinet_id), timeout=90)
             else:
                 client = WBClient(credentials["api_key"])
                 await asyncio.to_thread(wb_sales_cache.refresh, client, cabinet_id)
             log.info(f"Initial {marketplace} cache refresh done for newly-connected cabinet {cabinet_id}")
+        except asyncio.TimeoutError:
+            log.warning(f"Initial {marketplace} cache refresh for newly-connected cabinet {cabinet_id} exceeded 90s — scheduled job will retry")
         except Exception:
             log.exception(f"Initial {marketplace} cache refresh failed for newly-connected cabinet {cabinet_id} — scheduled job will retry")
 
