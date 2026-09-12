@@ -217,7 +217,14 @@ async def _refresh_ozon_caches(skip_if_fresh: bool = False):
             log.info(f"Ozon sales cache for cabinet {cabinet['id']} is recent — skipping startup refresh")
             continue
         try:
-            client = OzonClient(cabinet["credentials"]["client_id"], cabinet["credentials"]["api_key"])
+            # max_retries=3 (not the client default of 8): this job runs
+            # again in 3h regardless, so there's no need for the default's
+            # worst-case ~165s-per-call escalating backoff — under sustained
+            # 429s (which happens for real, per cabinet, for extended
+            # stretches) that default was tying up a thread-pool worker long
+            # enough, across several cabinets in a row, to crash the single
+            # Railway instance (observed live twice on 2026-09-12).
+            client = OzonClient(cabinet["credentials"]["client_id"], cabinet["credentials"]["api_key"], max_retries=3)
             await asyncio.to_thread(ozon_sales_cache.refresh, client, cabinet["id"])
         except Exception:
             log.exception(f"Ozon sales cache refresh failed for cabinet {cabinet['id']}")
