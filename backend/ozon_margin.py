@@ -80,6 +80,17 @@ def _accumulate_postings(postings, per_offer_orders, per_offer_buyouts, daily, t
         status = posting.get("status")
         if status in EXCLUDED_STATUSES:
             for idx, prod in enumerate(posting.get("products", [])):
+                # sku_to_offer must be populated here too, even though this
+                # posting's revenue isn't counted — a cancelled-after-ship
+                # posting still has real accrued delivery cost (see
+                # accrual_scope_sets), and if its SKU never appears in any
+                # non-cancelled posting in this window, skipping this leaves
+                # that delivery cost computed but orphaned (no offer_id to
+                # roll it up under), silently dropping it from the total.
+                sku = prod.get("sku")
+                offer_id = prod.get("offer_id")
+                if sku and offer_id:
+                    sku_to_offer[sku] = offer_id
                 qty = prod.get("quantity") or 0
                 price = _real_unit_price(posting, idx, prod)
                 totals_cancelled["revenue"] += price * qty
@@ -433,7 +444,15 @@ def build_margin_summary(
 
     total_revenue = totals_buyouts["revenue"]
     total_commission = sum(pr["commission"] for pr in products)
-    total_delivery = sum(pr["delivery"] for pr in products)
+    # NOT sum(pr["delivery"] for pr in products) — the products list only
+    # covers offers with buyout revenue, but delivery is shipped-scoped
+    # (wider: also covers offers whose only postings in this period were
+    # cancelled after shipment, which still incur real logistics cost with
+    # no revenue to attach a product row to). Summing per_offer_accrual
+    # directly instead of per-product avoids silently dropping that cost —
+    # confirmed live: this alone was worth ~95K₽/month understated on
+    # cabinet "Строй Мир".
+    total_delivery = sum(abs(a["delivery"]) for a in per_offer_accrual.values())
     total_item_fees = sum(pr["item_fees"] for pr in products)
     total_bonus = sum(pr["bonus"] for pr in products)
     total_cogs = sum(pr["cogs_total"] for pr in products)
