@@ -369,9 +369,21 @@ def build_margin_summary(
         log.info(f"Serving Ozon margin for {d_from}..{d_to} from cache ({len(cached_postings)} cached postings)")
         postings = _slice_postings(cached_postings, d_from, d_to)
         prev_postings = _slice_postings(cached_postings, prev_d_from, prev_d_to)
+        # The FULL cached pool (not sliced to this period) — a return
+        # accrued in this period can belong to an order created in an
+        # earlier one, and its posting must still be found here for the
+        # accrual scope/rollup below, or that return's reversal silently
+        # never counts. See _fetch_accrual_for_day's docstring.
+        wide_pool = cached_postings
     else:
         log.info(f"Fetching Ozon postings for {d_from}..{d_to} (and prior period for comparison)...")
-        postings = client.get_fbs_postings(iso_from, iso_to) + client.get_fbo_postings(iso_from, iso_to)
+        # Fetched from 45 days before d_from (not iso_from) for the same
+        # reason as wide_pool above — a live fallback fetch needs the same
+        # lookback the cache normally provides, or a return accrued in this
+        # period for an order placed slightly earlier gets silently dropped.
+        wide_iso_from = f"{(d_from - datetime.timedelta(days=45)).isoformat()}T00:00:00Z"
+        wide_pool = client.get_fbs_postings(wide_iso_from, iso_to) + client.get_fbo_postings(wide_iso_from, iso_to)
+        postings = _slice_postings(wide_pool, d_from, d_to)
         prev_postings = client.get_fbs_postings(prev_iso_from, prev_iso_to) + client.get_fbo_postings(prev_iso_from, prev_iso_to)
 
     per_offer_orders = collections.defaultdict(_empty_bucket)
@@ -397,14 +409,27 @@ def build_margin_summary(
         per_sku_accrual, non_item_total = _slice_accrual_by_date(cached_accrual_by_date, cached_non_item_by_date, d_from, d_to)
     else:
         log.info(f"Fetching accrual breakdown (commission, delivery, fees) for {d_from}..{d_to}...")
-        buyout_posting_numbers, shipped_posting_numbers = accrual_scope_sets(postings)
+        buyout_posting_numbers, shipped_posting_numbers = accrual_scope_sets(wide_pool)
         per_sku_accrual, non_item_total = _fetch_accrual_breakdown(client, d_from, d_to, buyout_posting_numbers, shipped_posting_numbers)
     other_fees_cost = abs(non_item_total)
+
+    # sku_to_offer from the WIDE pool, not just this period's postings — a
+    # return accrued this period can belong to an order (and SKU) from an
+    # earlier period; without this, that SKU's accrual data (now correctly
+    # scope-included above) has nowhere to roll up to and silently drops.
+    # Verified live: this was the actual missing piece for return-aware
+    # revenue, not the accrual approach itself — see project_ozon_accrual_api_gap memory.
+    full_sku_to_offer = {}
+    _accumulate_postings(
+        wide_pool, collections.defaultdict(_empty_bucket), collections.defaultdict(_empty_bucket),
+        collections.defaultdict(lambda: {"revenue": 0.0, "qty": 0}),
+        _empty_bucket(), _empty_bucket(), _empty_bucket(), full_sku_to_offer,
+    )
 
     # Roll per-SKU accrual up to per-offer (an offer normally maps to one SKU;
     # in the rare case Ozon assigns more than one, all are summed together).
     per_offer_accrual = collections.defaultdict(lambda: {"revenue": 0.0, "commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
-    for sku, offer_id in sku_to_offer.items():
+    for sku, offer_id in full_sku_to_offer.items():
         a = per_sku_accrual.get(str(sku))
         if not a:
             continue
@@ -434,19 +459,18 @@ def build_margin_summary(
         # under Вознаграждение Ozon (commission) — kept separate here rather
         # than netted into commission, so the displayed commission still
         # reflects the seller's real, expected rate (not artificially small).
-        # `revenue` comes from the postings list (_real_unit_price →
-        # customer_price), not accrual's `sale_price` — sale_price matches
-        # "Выручка" exactly for a single sale, and a return does post a
-        # matching negative sale_price entry for the same posting_number,
-        # but netting them only works when both the original sale's accrual
-        # AND the return's accrual fall in the SAME fetch window. Verified
-        # live this often isn't true (an order placed in July can be
-        # returned — and accrue the reversal — in August), which made a
-        # single calendar-month window systematically UNDER-count revenue
-        # for returns whose original sale accrued in a prior month. Proper
-        # returns tracking needs a wider or return-aware window design, not
-        # attempted here — see project_ozon_accrual_api_gap memory.
-        revenue = p["revenue"]
+        # `revenue` comes from accrual's `sale_price` (see
+        # _fetch_accrual_for_day), NOT the posting-list price — this matches
+        # Дарья's real "Выручка" exactly (verified to the kopeck) AND makes
+        # returns net out automatically: a return posts a NEGATIVE sale_price
+        # entry for the same posting_number, and summing per_offer_accrual
+        # from the WIDE postings pool (not just this period's postings —
+        # see wide_pool/full_sku_to_offer above) means a return for an
+        # order placed in an earlier period still gets found and netted.
+        # Verified live end-to-end: payout_real reproduced Дарья's real
+        # August balance (975,175.31₽) to the kopeck once this scope was
+        # wide enough. qty still comes from the postings list.
+        revenue = accrual["revenue"]
         commission = abs(accrual["commission"])
         delivery = abs(accrual["delivery"])
         item_fees = abs(accrual["item_fees"])
@@ -474,21 +498,23 @@ def build_margin_summary(
         })
     products.sort(key=lambda x: -x["revenue"])
 
-    total_revenue = totals_buyouts["revenue"]
-    total_commission = sum(pr["commission"] for pr in products)
-    # NOT sum(pr["delivery"] for pr in products) — the products list only
-    # covers offers with buyout revenue, but delivery is shipped-scoped
-    # (wider: also covers offers whose only postings in this period were
-    # cancelled after shipment, which still incur real logistics cost with
-    # no revenue to attach a product row to). Summing per_offer_accrual
-    # directly instead of per-product avoids silently dropping that cost —
-    # confirmed live: this alone was worth ~95K₽/month understated on
-    # cabinet "Строй Мир".
+    # NOT summed from `products` (which only lists offers with buyout
+    # revenue THIS period) — revenue, commission, bonus and delivery are all
+    # accrual-scoped from the WIDE pool now (see wide_pool/full_sku_to_offer
+    # above), so an offer that was, say, fully returned this period (zero
+    # net buyouts, but real negative accrual entries) still needs to count.
+    # Summing per_offer_accrual directly avoids silently dropping that —
+    # confirmed live: this was worth ~95K₽/month for delivery alone, and was
+    # the actual missing piece for return-aware revenue (not the accrual
+    # approach itself, which reproduces Дарья's real balance to the kopeck
+    # once the scope is wide enough).
+    total_revenue = sum(a["revenue"] for a in per_offer_accrual.values())
+    total_commission = sum(abs(a["commission"]) for a in per_offer_accrual.values())
     total_delivery = sum(abs(a["delivery"]) for a in per_offer_accrual.values())
-    total_item_fees = sum(pr["item_fees"] for pr in products)
-    total_bonus = sum(pr["bonus"] for pr in products)
+    total_item_fees = sum(abs(a["item_fees"]) for a in per_offer_accrual.values())
+    total_bonus = sum(a["bonus"] for a in per_offer_accrual.values())
     total_cogs = sum(pr["cogs_total"] for pr in products)
-    total_tax = sum(pr["tax"] for pr in products)
+    total_tax = total_revenue * (tax_pct / 100)
     # "К перечислению" — what Ozon actually pays out for the buyouts, before
     # the seller's OWN costs (cogs, tax) are taken out of that. Everything
     # subtracted here is money Ozon itself keeps, not the seller's expense;
