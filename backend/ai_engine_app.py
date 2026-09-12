@@ -373,6 +373,14 @@ def _compute_fixed_totals_sync(cabinet_id: int, date_from: str, date_to: str):
     per_sku_accrual, non_item_total = ozon_margin._fetch_accrual_breakdown(client, d_from, d_to, buyout_posting_numbers)
     other_fees_cost = abs(non_item_total)
 
+    # DIAGNOSTIC: also sum delivery with NO status filter at all, to check
+    # whether the buyout-only scope is excluding real shipping costs for
+    # cancelled-after-ship / returned postings (her real "Услуги доставки"
+    # is -197,482 vs our buyout-scoped delivery, which came out far lower).
+    per_sku_accrual_unfiltered, _ = ozon_margin._fetch_accrual_breakdown(client, d_from, d_to, None)
+    delivery_unfiltered_total = sum(v["delivery"] for v in per_sku_accrual_unfiltered.values())
+    cancelled_after_ship_count = sum(1 for p in postings if (p.get("cancellation") or {}).get("cancelled_after_ship"))
+
     per_offer_accrual = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
     for sku, offer_id in sku_to_offer.items():
         a = per_sku_accrual.get(str(sku))
@@ -404,6 +412,8 @@ def _compute_fixed_totals_sync(cabinet_id: int, date_from: str, date_to: str):
         "item_fees": round(total_item_fees, 2), "other_fees": round(other_fees_cost, 2),
         "cogs_total": round(total_cogs, 2), "tax": round(total_tax, 2),
         "payout_real": round(total_payout_real, 2), "profit": round(total_profit, 2),
+        "delivery_unfiltered_total": round(delivery_unfiltered_total, 2),
+        "cancelled_after_ship_count": cancelled_after_ship_count,
     }
 
 
