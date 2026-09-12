@@ -336,6 +336,26 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
 
 
 
+@app.get("/api/_debug/ozon-posting-price-fields/{cabinet_id}")
+def debug_ozon_posting_price_fields(cabinet_id: int, telegram_id: int, date_str: str, limit: int = 3):
+    """TEMPORARY, single call — dumps a raw posting's product price fields
+    (including financial_data, already requested but not used for revenue)
+    to check whether our revenue (from prod['price']) is the nominal/
+    pre-discount price rather than what the customer actually paid — real
+    accrual data ("Выручка" in Дарья's own August report) was only
+    1,292,390₽ vs our computed 2,503,977₽, almost exactly the nominal-vs-
+    discounted-price ratio seen earlier tonight on a single sale."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    cached = ozon_sales_cache.get(cabinet_id)
+    cpostings = cached[0] if cached else []
+    matches = [p for p in cpostings if (p.get("in_process_at") or p.get("created_at") or "")[:10] == date_str][:limit]
+    return {"count": len(matches), "postings": matches}
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
