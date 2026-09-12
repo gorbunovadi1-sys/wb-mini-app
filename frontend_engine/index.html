@@ -261,6 +261,11 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .expense-row { display: flex; justify-content: space-between; font-size: 11px; font-family: var(--font-mono); color: var(--text-secondary); }
 .expense-row span:last-child { color: var(--text); }
 .expense-row span.eb-neg { color: var(--negative); font-weight: 600; }
+.expense-toggle { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-secondary); cursor: pointer; user-select: none; }
+.expense-chevron { transition: transform .15s; }
+.expense-breakdown.expanded .expense-chevron { transform: rotate(180deg); }
+.expense-breakdown.expanded .expense-summary { display: none; }
+.expense-breakdown:not(.expanded) .expense-detail { display: none; }
 .price-profit-row { display: flex; justify-content: space-between; align-items: baseline; padding-top: 8px; border-top: 1px solid var(--border); }
 .price-profit-row .pp-label { font-size: 11px; color: var(--text-secondary); text-transform: uppercase; }
 .price-profit-row .pp-value { font-family: var(--font-mono); font-size: 17px; font-weight: 700; }
@@ -749,14 +754,17 @@ function productCardHtml(p, maxAbsProfit) {
   const itemKey = p.offer_id !== undefined && p.offer_id !== null ? p.offer_id : p.nm_id;
   const isOzon = p.delivery !== undefined; // Ozon products carry delivery/item_fees/bonus/tax; WB carries logistics/storage/penalty_deduction/ad_spend/forpay instead
   const row = (label, value, sign) => `<div class="expense-row"><span>${label}</span><span>${sign || ''}${fmtMoney(value)}</span></div>`;
-  let expenseRows;
+  const textRow = (label, text) => `<div class="expense-row"><span>${label}</span><span>${text}</span></div>`;
+  let expenseRows, totalIncome, totalExpenses;
   if (isOzon) {
     // "К перечислению" — what Ozon actually pays out before the seller's
     // own cost price and tax, same formula as the account-level payout_real,
     // just scaled to this one product.
     const payout = p.revenue + (p.bonus || 0) - p.commission - p.delivery - p.item_fees;
+    totalIncome = p.revenue + (p.bonus || 0);
+    totalExpenses = p.commission + p.delivery + p.item_fees + p.cogs_total + p.tax;
     expenseRows = `
-      ${row('Продано', p.qty + ' шт.')}
+      ${textRow('Продано', p.qty + ' шт.')}
       ${row('Выручка', p.revenue)}
       ${p.bonus ? `<div class="expense-row"><span>Бонус Ozon за баллы</span><span>${p.bonus >= 0 ? '+' : ''}${fmtMoney(p.bonus)}</span></div>` : ''}
       ${row('Комиссия', p.commission, '−')}
@@ -766,8 +774,10 @@ function productCardHtml(p, maxAbsProfit) {
       ${row(`Себестоимость (${fmtMoney(p.cogs_unit)}/шт.)`, p.cogs_total, '−')}
       ${row('Налог', p.tax, '−')}`;
   } else {
+    totalIncome = p.revenue;
+    totalExpenses = p.commission + p.logistics + (p.storage || 0) + (p.penalty_deduction || 0) + (p.ad_spend || 0) + p.cogs_total;
     expenseRows = `
-      ${row('Продано', p.qty + ' шт.')}
+      ${textRow('Продано', p.qty + ' шт.')}
       ${row('Выручка', p.revenue)}
       ${row('Комиссия', p.commission, '−')}
       ${row('Логистика', p.logistics, '−')}
@@ -786,8 +796,15 @@ function productCardHtml(p, maxAbsProfit) {
     <div class="product-bar-track"><div class="product-bar-fill ${neg ? 'neg' : ''}" style="width:${barWidth}%"></div></div>
     <div class="product-meta"><span>выручка ${fmtMoney(p.revenue)} · ${p.qty} шт.</span><span>маржа ${p.margin_percent.toFixed(1)}%</span></div>
     <div class="expense-breakdown">
-      ${expenseRows}
-      <div class="expense-row" style="border-top:1px solid var(--border);margin-top:2px;padding-top:4px"><span>Прибыль</span><span class="${neg ? 'eb-neg' : ''}">${fmtMoney(p.profit)}</span></div>
+      <div class="expense-toggle"><span>Расходы и доходы</span><span class="expense-chevron">▾</span></div>
+      <div class="expense-summary">
+        ${row('Доходы', totalIncome)}
+        ${row('Расходы', totalExpenses, '−')}
+      </div>
+      <div class="expense-detail">
+        ${expenseRows}
+        <div class="expense-row" style="border-top:1px solid var(--border);margin-top:2px;padding-top:4px"><span>Прибыль</span><span class="${neg ? 'eb-neg' : ''}">${fmtMoney(p.profit)}</span></div>
+      </div>
     </div>
     <div class="cogs-row">
       <label>Закупка/шт.</label>
@@ -799,6 +816,12 @@ function productCardHtml(p, maxAbsProfit) {
 
 function bindCogsHandlers(root, onSaved) {
   root.querySelectorAll('.product-card').forEach(card => {
+    const toggle = card.querySelector('.expense-toggle');
+    if (toggle) {
+      toggle.addEventListener('click', () => {
+        card.querySelector('.expense-breakdown').classList.toggle('expanded');
+      });
+    }
     const saveBtn = card.querySelector('.cogs-save');
     if (!saveBtn) return; // this card has no cogs-row (e.g. cost price already known)
     saveBtn.addEventListener('click', async () => {
