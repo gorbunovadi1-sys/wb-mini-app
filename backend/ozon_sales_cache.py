@@ -14,6 +14,21 @@ log = logging.getLogger("ozon_sales_cache")
 # doubling the daily accrual-fetch cost for the rare very-wide custom range,
 # which still falls back to a live fetch.
 WINDOW_DAYS = 180
+# A cabinet with more postings than this in its last cached window fetches a
+# REDUCED_WINDOW_DAYS window instead — roughly half the ~200 sequential
+# Ozon requests a full 180-day refresh needs, concentrated on exactly the
+# cabinets big enough to trigger sustained 429s (observed live: one cabinet
+# with 26,207 postings, ~8x the next largest, couldn't complete a refresh
+# for 24+ hours). The tradeoff: build_margin_summary's period-over-period
+# comparison for THIS cabinet's own "90 дней" view will no longer be fully
+# cache-covered and falls back to a live fetch (use_cache's
+# cache_cover_from <= prev_d_from check already handles this correctly on
+# its own — no other code needed) — an acceptable cost for a cabinet this
+# size, versus every view failing outright. Revisit this threshold if more
+# cabinets grow into this range; it's tuned to the one real example seen
+# so far, not a principled cutoff.
+LARGE_CABINET_POSTING_THRESHOLD = 10000
+REDUCED_WINDOW_DAYS = 90
 STALE_AFTER = datetime.timedelta(hours=4)
 # A much shorter window than STALE_AFTER, used only to decide whether a
 # just-started process should skip its startup refresh — several redeploys
@@ -63,15 +78,16 @@ def refresh(client, cabinet_id: int):
     of this un-sliced pool."""
     from . import ozon_margin  # local import: avoid a cycle at module load
 
-    today = datetime.date.today()
-    fetch_from = today - datetime.timedelta(days=WINDOW_DAYS)
-    iso_from, iso_to = f"{fetch_from.isoformat()}T00:00:00Z", f"{today.isoformat()}T23:59:59Z"
-
     with SessionLocal() as session:
         existing = session.get(OzonSalesCache, cabinet_id)
         old_postings = existing.postings if existing else []
         old_accrual_entries = existing.accrual_entries if existing else []
         old_non_item_by_date = existing.non_item_by_date if existing else {}
+
+    window_days = REDUCED_WINDOW_DAYS if len(old_postings) > LARGE_CABINET_POSTING_THRESHOLD else WINDOW_DAYS
+    today = datetime.date.today()
+    fetch_from = today - datetime.timedelta(days=window_days)
+    iso_from, iso_to = f"{fetch_from.isoformat()}T00:00:00Z", f"{today.isoformat()}T23:59:59Z"
 
     postings, postings_fresh = old_postings, False
     try:
