@@ -193,12 +193,28 @@ def _fetch_accrual_for_day(client, date_str: str):
                     continue
                 commission = prod.get("commission") or {}
                 delivery = prod.get("delivery") or {}
+                # type_id 59 = ReturnFlowLogistic = "Обратная логистика" —
+                # its own real cost line in Дарья's Юнит-экономика export,
+                # distinct from "Логистика" (the forward leg). Split it out:
+                # forward-leg delivery is gated by posting-creation-period
+                # (real shipping cost, incurred regardless of a later
+                # cancellation — verified live: a cancelled-after-ship
+                # posting still carries a genuine type_id=32 forward charge
+                # that DOES belong in the period), while the reverse leg is
+                # gated like a reversal, by its own entry date, in
+                # attribute_accrual_entries.
+                services = delivery.get("services") or []
+                delivery_reverse = sum(
+                    _accrual_amount(s, "accrued", "amount") for s in services if s.get("type_id") == 59
+                )
+                delivery_total = _accrual_amount(delivery, "total_accrued", "amount")
                 entries.append({
                     "unit_number": unit_number, "sku": str(sku), "date": date_str,
                     "revenue": _accrual_amount(commission, "sale_price", "amount"),
                     "commission": _accrual_amount(commission, "commission", "amount"),
                     "bonus": _accrual_amount(commission, "bonus", "amount") + _accrual_amount(commission, "coinvestment", "amount"),
-                    "delivery": _accrual_amount(delivery, "total_accrued", "amount"),
+                    "delivery": delivery_total - delivery_reverse,
+                    "delivery_reverse": delivery_reverse,
                     "item_fees": 0.0,
                 })
         elif cat == "ITEM":
@@ -209,7 +225,7 @@ def _fetch_accrual_for_day(client, date_str: str):
                 fee_sum = sum(_accrual_amount(fee, "accrued", "amount") for fee in (fee_group.get("fees") or []))
                 entries.append({
                     "unit_number": unit_number, "sku": str(sku), "date": date_str,
-                    "revenue": 0.0, "commission": 0.0, "bonus": 0.0, "delivery": 0.0,
+                    "revenue": 0.0, "commission": 0.0, "bonus": 0.0, "delivery": 0.0, "delivery_reverse": 0.0,
                     "item_fees": fee_sum,
                 })
         elif cat == "NON_ITEM":
@@ -234,27 +250,42 @@ def fetch_accrual_entries(client, date_from: datetime.date, date_to: datetime.da
     return entries, non_item_by_date
 
 
-def attribute_accrual_entries(entries: list, buyout_posting_numbers: set, period_from: str, period_to: str) -> dict:
+def attribute_accrual_entries(entries: list, buyout_posting_numbers: set, created_posting_numbers: set, period_from: str, period_to: str) -> dict:
     """Sums accrual entries into per-SKU totals for [period_from, period_to],
-    handling Ozon's settlement lag correctly. Two different attribution
-    rules depending on what kind of entry it is:
+    handling Ozon's settlement lag correctly. Three different attribution
+    rules, because "which kind of event is this" matters more than a single
+    revenue-sign check turned out to capture:
 
-    - An "original" entry (revenue >= 0 — a real sale, or an ITEM/delivery-
-      only entry with no revenue field at all) belongs to this period if its
-      POSTING was created within [period_from, period_to] and is a genuine
-      buyout — regardless of which day the entry itself happened to post.
-      This is what makes a late-period order still count even when Ozon
-      doesn't settle its accrual until well after the period ends (verified
-      live: a "тачка2-02нов" August order's accrual was still settling as
-      late as September 12th — over a week after month-end).
+    - **Sale fields** (revenue, commission, bonus — always move together,
+      from the same accrual entry) and **item_fees**: an "original" entry
+      (revenue >= 0, or an item-fee entry with no revenue field at all)
+      belongs to the period if its POSTING was created within it AND is a
+      genuine buyout (`buyout_posting_numbers` — status=delivered), matching
+      Ozon's own `/v2/finance/realization`, which excludes cancellations —
+      regardless of which day the entry itself settled on (this is what
+      survives Ozon's real settlement lag: verified live, an August
+      "тачка2-02нов" order's revenue/commission was still settling as late
+      as September 12th). A "reversal" (revenue < 0 — a return) instead
+      belongs if ITS OWN date falls in the period, regardless of when the
+      original posting was created — matching how Ozon books "Возврат
+      выручки" on the return's date, independent of the original sale.
 
-    - A "reversal" entry (revenue < 0 — a return) belongs to this period if
-      the ENTRY'S OWN date falls within [period_from, period_to], regardless
-      of when the original posting was created. This is what makes an
-      August return of a July order still net out of August's numbers,
-      matching Ozon's own accounting (her real "Отчёт по начислениям" books
-      "Возврат выручки" on the return's own date, independent of the
-      original sale's date).
+    - **Delivery, forward leg** (`delivery` — everything except return-flow
+      logistics, see below): belongs if its posting was created within the
+      period, **regardless of final status** (`created_posting_numbers` —
+      no delivered/cancelled filter at all). Verified live, raw entry by raw
+      entry: a posting cancelled AFTER shipment still carries a real,
+      separate type_id=32 ("Логистика") charge — Ozon incurs that cost the
+      moment it ships, independent of whether the sale later completes, and
+      a cancelled-before-ship posting simply has no delivery entry to sum in
+      the first place, so this scope doesn't need to distinguish further.
+
+    - **Delivery, reverse leg** (`delivery_reverse` — type_id=59,
+      ReturnFlowLogistic = "Обратная логистика", split out in
+      _fetch_accrual_for_day): treated like a reversal — belongs if its own
+      date falls in the period, regardless of posting scope. This has its
+      own real line in Дарья's Юнит-экономика export, separate from
+      "Логистика", and behaves like a return event, not an original sale.
 
     `entries` should cover [period_from, period_from + enough lag buffer] —
     the caller is responsible for fetching wide enough forward that
@@ -262,18 +293,19 @@ def attribute_accrual_entries(entries: list, buyout_posting_numbers: set, period
     per_sku = collections.defaultdict(lambda: {"revenue": 0.0, "commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
     for e in entries:
         is_original = e["revenue"] >= 0
-        if is_original:
-            belongs = e["unit_number"] in buyout_posting_numbers
-        else:
-            belongs = period_from <= e["date"] <= period_to
-        if not belongs:
-            continue
         s = per_sku[e["sku"]]
-        s["revenue"] += e["revenue"]
-        s["commission"] += e["commission"]
-        s["bonus"] += e["bonus"]
-        s["delivery"] += e["delivery"]
-        s["item_fees"] += e["item_fees"]
+
+        sale_belongs = (e["unit_number"] in buyout_posting_numbers) if is_original else (period_from <= e["date"] <= period_to)
+        if sale_belongs:
+            s["revenue"] += e["revenue"]
+            s["commission"] += e["commission"]
+            s["bonus"] += e["bonus"]
+            s["item_fees"] += e["item_fees"]
+
+        if e["unit_number"] in created_posting_numbers:
+            s["delivery"] += e["delivery"]
+        if period_from <= e["date"] <= period_to:
+            s["delivery"] += e.get("delivery_reverse", 0.0)
     return dict(per_sku)
 
 
@@ -394,19 +426,20 @@ def build_margin_summary(
         _empty_bucket(), prev_totals_buyouts, _empty_bucket(), {},
     )
 
-    # Strict buyout (delivered) scope, not the wider "shipped" one — tried
-    # "shipped" (delivered OR cancelled-after-ship) reasoning a cancelled-
-    # after-ship posting still incurs real delivery cost, but verified live
-    # (per-SKU, cross-checked against her real Юнит-экономика) that her own
-    # per-product "Логистика" figure does NOT include cancelled-after-ship
-    # shipping cost: for "тачка2-02нов", delivery summed from only the
-    # revenue-bearing (real sale) entries was -92,173₽, matching her real
-    # -94,286₽ closely; adding the 17 cancelled-after-ship postings' delivery
-    # on top pushed it to -118,664₽, overshooting by the cancelled-after-
-    # ship amount almost exactly. That extra cost is real Ozon spend, just
-    # not attributed to this product's per-unit economics in her own report.
+    # buyout_posting_numbers (status=delivered) gates sale fields/item_fees;
+    # created_posting_numbers (any status, just "was this posting created in
+    # the period") gates delivery's forward leg — see
+    # attribute_accrual_entries's docstring for the full reasoning (this
+    # split itself went through two revisions: first delivery had no status
+    # filter at all, which over-counted cancelled-after-ship logistics that
+    # her report doesn't attribute to the product; then it was narrowed to
+    # strict buyout, which under-counted, because a cancelled-after-ship
+    # posting genuinely DOES carry a real forward-leg "Логистика" charge —
+    # confirmed raw, entry by entry; only the reverse-leg "Обратная
+    # логистика" behaves like a return and needs its own date-based rule).
     buyout_posting_numbers, _ = accrual_scope_sets(postings)
-    per_sku_accrual = attribute_accrual_entries(entries, buyout_posting_numbers, d_from.isoformat(), d_to.isoformat())
+    created_posting_numbers = {p.get("posting_number") for p in postings if p.get("posting_number")}
+    per_sku_accrual = attribute_accrual_entries(entries, buyout_posting_numbers, created_posting_numbers, d_from.isoformat(), d_to.isoformat())
     non_item_total = sum(
         v for k, v in non_item_by_date.items() if d_from.isoformat() <= k <= d_to.isoformat()
     )
