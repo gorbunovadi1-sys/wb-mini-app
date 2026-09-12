@@ -359,10 +359,26 @@ def build_margin_summary(
     iso_from, iso_to = f"{d_from.isoformat()}T00:00:00Z", f"{d_to.isoformat()}T23:59:59Z"
     prev_iso_from, prev_iso_to = f"{prev_d_from.isoformat()}T00:00:00Z", f"{prev_d_to.isoformat()}T23:59:59Z"
 
+    # Cached accrual entries from before the sale_price revenue fix have no
+    # "revenue" key at all — _slice_accrual_by_date's vals.get("revenue", 0.0)
+    # silently defaults to 0 for them instead of erroring, which produced a
+    # real, live, badly-wrong (large negative) Дашборд number: revenue ≈ 0
+    # while commission/delivery/bonus still subtracted from stale cached
+    # data. Detect old-format cache (sample one non-empty day) and treat it
+    # as unusable so this falls through to the live path instead, until the
+    # next successful cache refresh replaces it with revenue-aware data.
+    cache_has_revenue_field = False
+    if cached_accrual_by_date:
+        for day_data in cached_accrual_by_date.values():
+            if day_data:
+                cache_has_revenue_field = any("revenue" in vals for vals in day_data.values())
+                break
+
     use_cache = (
         cached_postings is not None and cached_accrual_by_date is not None
         and cache_cover_from is not None
         and datetime.date.fromisoformat(cache_cover_from) <= prev_d_from
+        and cache_has_revenue_field
     )
 
     if use_cache:
