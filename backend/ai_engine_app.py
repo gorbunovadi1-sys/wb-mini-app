@@ -1,5 +1,4 @@
 import asyncio
-import collections
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -9,7 +8,7 @@ import requests
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -335,105 +334,6 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
 
 
 
-_fix_verify_state = {}
-
-
-def _compute_fixed_totals_sync(cabinet_id: int, date_from: str, date_to: str):
-    """Uses cached postings (no live posting fetch — Ozon is already
-    rate-limiting hard right now) for revenue/buyouts, but does a fresh LIVE
-    accrual fetch through the just-shipped buyout-filtering fix, so the
-    before/after can be compared without needing a full cache rebuild."""
-    import datetime as _dt
-    cabinet = cabinets.get_cabinet(cabinet_id)
-    cost_prices = cabinets.get_cost_prices(cabinet_id)
-    tax_pct = cabinet.get("settings", {}).get("tax_pct", 0)
-    cached = ozon_sales_cache.get(cabinet_id)
-    if not cached:
-        raise RuntimeError("no cache for this cabinet")
-    cpostings = cached[0]
-    d_from = _dt.date.fromisoformat(date_from)
-    d_to = _dt.date.fromisoformat(date_to)
-    postings = ozon_margin._slice_postings(cpostings, d_from, d_to)
-
-    per_offer_orders = collections.defaultdict(ozon_margin._empty_bucket)
-    per_offer_buyouts = collections.defaultdict(ozon_margin._empty_bucket)
-    daily = collections.defaultdict(lambda: {"revenue": 0.0, "qty": 0})
-    totals_orders = ozon_margin._empty_bucket()
-    totals_buyouts = ozon_margin._empty_bucket()
-    totals_cancelled = ozon_margin._empty_bucket()
-    sku_to_offer = {}
-    ozon_margin._accumulate_postings(postings, per_offer_orders, per_offer_buyouts, daily, totals_orders, totals_buyouts, totals_cancelled, sku_to_offer)
-
-    buyout_posting_numbers = {p.get("posting_number") for p in postings if p.get("status") in ozon_margin.BUYOUT_STATUSES}
-    client = _build_client(cabinet, ozon_max_retries=2)
-    per_sku_accrual, non_item_total = ozon_margin._fetch_accrual_breakdown(client, d_from, d_to, buyout_posting_numbers)
-    other_fees_cost = abs(non_item_total)
-
-    per_offer_accrual = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
-    for sku, offer_id in sku_to_offer.items():
-        a = per_sku_accrual.get(str(sku))
-        if not a:
-            continue
-        oa = per_offer_accrual[offer_id]
-        oa["commission"] += a["commission"]
-        oa["delivery"] += a["delivery"]
-        oa["item_fees"] += a["item_fees"]
-        oa["bonus"] += a.get("bonus", 0.0)
-
-    total_revenue = totals_buyouts["revenue"]
-    total_commission = total_delivery = total_item_fees = total_bonus = total_cogs = total_tax = 0.0
-    for offer_id, p in per_offer_buyouts.items():
-        accrual = per_offer_accrual.get(offer_id, {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
-        total_commission += abs(accrual["commission"])
-        total_delivery += abs(accrual["delivery"])
-        total_item_fees += abs(accrual["item_fees"])
-        total_bonus += accrual["bonus"]
-        cogs_unit = cost_prices.get(offer_id, 0)
-        total_cogs += cogs_unit * p["qty"]
-        total_tax += p["revenue"] * (tax_pct / 100)
-
-    total_payout_real = total_revenue + total_bonus - total_commission - total_delivery - total_item_fees - other_fees_cost
-    total_profit = total_payout_real - total_cogs - total_tax
-    return {
-        "revenue": round(total_revenue, 2), "commission": round(total_commission, 2),
-        "bonus": round(total_bonus, 2), "delivery": round(total_delivery, 2),
-        "item_fees": round(total_item_fees, 2), "other_fees": round(other_fees_cost, 2),
-        "cogs_total": round(total_cogs, 2), "tax": round(total_tax, 2),
-        "payout_real": round(total_payout_real, 2), "profit": round(total_profit, 2),
-    }
-
-
-async def _run_fixed_totals(cabinet_id: int, date_from: str, date_to: str):
-    state = _fix_verify_state[cabinet_id] = {"running": True}
-    try:
-        account = await asyncio.to_thread(_compute_fixed_totals_sync, cabinet_id, date_from, date_to)
-        state["account"] = account
-        state["error"] = None
-    except Exception as e:
-        state["error"] = str(e)
-    state["running"] = False
-
-
-@app.get("/api/_debug/ozon-fixed-totals-start/{cabinet_id}")
-def debug_ozon_fixed_totals_start(cabinet_id: int, telegram_id: int, date_from: str, date_to: str, background_tasks: BackgroundTasks):
-    """TEMPORARY — kick off _run_fixed_totals in the background. Poll the
-    -status route. Remove both once the fix is verified and shipped."""
-    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
-        raise HTTPException(status_code=403, detail="admin only")
-    cabinet = cabinets.get_cabinet(cabinet_id)
-    if not cabinet or cabinet["marketplace"] != "ozon":
-        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
-    if _fix_verify_state.get(cabinet_id, {}).get("running"):
-        return {"status": "already running"}
-    background_tasks.add_task(_run_fixed_totals, cabinet_id, date_from, date_to)
-    return {"status": "started"}
-
-
-@app.get("/api/_debug/ozon-fixed-totals-status/{cabinet_id}")
-def debug_ozon_fixed_totals_status(cabinet_id: int, telegram_id: int):
-    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
-        raise HTTPException(status_code=403, detail="admin only")
-    return _fix_verify_state.get(cabinet_id, {"status": "not started"})
 
 
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
