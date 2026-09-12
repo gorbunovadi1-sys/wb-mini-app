@@ -355,7 +355,12 @@ def debug_ozon_product_detail(cabinet_id: int, telegram_id: int, date_from: str,
         cached_postings=cpostings, cached_accrual_by_date=caccrual,
         cached_non_item_by_date=cnonitem, cache_cover_from=ccover_from,
     )
-    matches = [p for p in result.get("products", []) if p.get("offer_id") == offer_id]
+    needle = offer_id.lower().replace(" ", "").replace("-", "")
+    matches = [
+        p for p in result.get("products", [])
+        if needle in (p.get("offer_id") or "").lower().replace(" ", "").replace("-", "")
+        or needle in (p.get("title") or "").lower().replace(" ", "").replace("-", "")
+    ]
     return {"matches": matches, "tax_pct": tax_pct, "products_count": len(result.get("products", []))}
 
 
