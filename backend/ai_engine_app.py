@@ -347,9 +347,9 @@ def debug_ozon_posting_number_field(cabinet_id: int, telegram_id: int, date_str:
     client = _build_client(cabinet, ozon_max_retries=1)
     accruals = client.get_accrual_by_day(date_str)
     unit_numbers = [a.get("unit_number") for a in accruals if a.get("accrued_category") == "POSTING"][:10]
-    fbs = client.get_fbs_postings(f"{date_str}T00:00:00Z", f"{date_str}T23:59:59Z")
-    fbo = client.get_fbo_postings(f"{date_str}T00:00:00Z", f"{date_str}T23:59:59Z")
-    posting_numbers = [p.get("posting_number") for p in (fbs + fbo)][:10]
+    cached = ozon_sales_cache.get(cabinet_id)
+    cpostings = cached[0] if cached else []
+    posting_numbers = [p.get("posting_number") for p in cpostings if (p.get("in_process_at") or p.get("created_at") or "")[:10] == date_str][:10]
     return {"sample_unit_numbers": unit_numbers, "sample_posting_numbers": posting_numbers}
 
 
