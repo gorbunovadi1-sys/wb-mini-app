@@ -337,6 +337,40 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
 
 
 
+@app.get("/api/_debug/ozon-sku-entries/{cabinet_id}")
+def debug_ozon_sku_entries(cabinet_id: int, telegram_id: int, sku: str, date_from: str, date_to: str):
+    """TEMPORARY — dump every raw accrual entry for one SKU (from the cached
+    flat entry list) plus which ones attribute_accrual_entries would include
+    for [date_from, date_to] and why, to find the remaining delivery/
+    item_fees attribution gap. Remove after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    cached = ozon_sales_cache.get(cabinet_id)
+    if not cached:
+        raise HTTPException(status_code=400, detail="no cache")
+    cpostings, centries, cnonitem, ccover_from, _ = cached
+    import datetime as _dt
+    d_from = _dt.date.fromisoformat(date_from)
+    d_to = _dt.date.fromisoformat(date_to)
+    postings = ozon_margin._slice_postings(cpostings, d_from, d_to)
+    _, shipped = ozon_margin.accrual_scope_sets(postings)
+    sku_entries = [e for e in (centries or []) if e.get("sku") == sku]
+    annotated = []
+    for e in sku_entries:
+        is_original = e["revenue"] >= 0
+        if is_original:
+            belongs = e["unit_number"] in shipped
+            reason = f"original; posting_in_period_shipped_set={belongs}"
+        else:
+            belongs = date_from <= e["date"] <= date_to
+            reason = f"reversal; date_in_range={belongs}"
+        annotated.append({**e, "belongs": belongs, "reason": reason})
+    return {"sku": sku, "total_entries_for_sku": len(sku_entries), "entries": annotated}
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
