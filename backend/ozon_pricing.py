@@ -90,7 +90,13 @@ def get_pricing_list(client, cabinet_id: int) -> list:
     names = {a.get("offer_id"): a.get("name", "") for a in attrs}
     cost_prices = cabinets.get_cost_prices(cabinet_id)
     stocks = client.get_all_stocks()
-    tax_pct = cabinets.get_cabinet_settings(cabinet_id).get("tax_pct", 0)
+    settings = cabinets.get_cabinet_settings(cabinet_id)
+    tax_pct = settings.get("tax_pct", 0)
+    # Same target-margin setting ozon_price_monitor/ozon_promo_guard already
+    # alert against — surfaced here too so Цены can show "маржа X% (цель
+    # Y%)" and suggest the price needed to actually hit it, instead of only
+    # the hardcoded 15%/0% break-even suggestion.
+    min_margin_pct = settings.get("min_margin_pct", 0)
     real_rates, shop_avg_acquiring = _real_rates_by_offer(cabinet_id)
 
     items = []
@@ -136,6 +142,7 @@ def get_pricing_list(client, cabinet_id: int) -> list:
             "bonus": bonus,
             "rate_source": rate_source,
             "tax_pct": tax_pct,
+            "min_margin_pct": min_margin_pct,
             "fbo_stock": stock["fbo"],
             "fbs_stock": stock["fbs"],
         })

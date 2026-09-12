@@ -271,6 +271,10 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .price-profit-row .pp-value { font-family: var(--font-mono); font-size: 17px; font-weight: 700; }
 .price-profit-row .pp-value.neg { color: var(--negative); }
 .price-profit-row .pp-value.pos { color: var(--positive); }
+.price-margin-row { display: flex; justify-content: space-between; align-items: baseline; font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+.price-margin-row .pm-value { font-family: var(--font-mono); font-weight: 600; }
+.price-margin-row .pm-value.neg { color: var(--negative); }
+.price-margin-row .pm-value.pos { color: var(--positive); }
 .price-suggest { font-size: 10.5px; color: var(--text-secondary); margin-top: 4px; }
 .price-suggest b { color: var(--positive); font-family: var(--font-mono); }
 .price-save-row { margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px; }
@@ -1260,7 +1264,8 @@ function priceCardHtml(p) {
   const staged = pendingPriceChanges[p.offer_id] !== undefined;
   return `<div class="price-card ${staged ? 'staged' : ''}" data-offer="${p.offer_id}"
       data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-tax="${p.tax_pct || 0}"
-      data-acquiring="${p.acquiring || 0}" data-bonus="${p.bonus || 0}" data-old-price="${p.old_price || 0}">
+      data-acquiring="${p.acquiring || 0}" data-bonus="${p.bonus || 0}" data-old-price="${p.old_price || 0}"
+      data-target-margin="${p.min_margin_pct || 0}">
     <div class="p-name">${p.name}</div>
     <div class="p-offer copy-chip" data-copy="${p.offer_id}">${p.offer_id}</div>
     <div class="price-fields">
@@ -1289,6 +1294,10 @@ function priceCardHtml(p) {
       <span class="pp-label">Прибыль со штуки</span>
       <span class="pp-value profit-out">—</span>
     </div>
+    <div class="price-margin-row">
+      <span>Маржа</span>
+      <span class="pm-value margin-out">—</span>
+    </div>
     <div class="price-suggest suggest-out"></div>
     <div class="price-save-row">
       <button class="cogs-only-save-btn" title="Сохранить только себестоимость, без отправки цены в Ozon">Сохранить себестоимость</button>
@@ -1305,9 +1314,11 @@ function bindPriceCard(card) {
   const acquiring = parseFloat(card.dataset.acquiring) || 0;
   const bonus = parseFloat(card.dataset.bonus) || 0;
   const oldPriceOriginal = parseFloat(card.dataset.oldPrice) || 0;
+  const targetMarginPct = parseFloat(card.dataset.targetMargin) || 0;
   const priceInput = card.querySelector('.price-input');
   const cogsInput = card.querySelector('.cogs-price-input');
   const profitOut = card.querySelector('.profit-out');
+  const marginOut = card.querySelector('.margin-out');
   const suggestOut = card.querySelector('.suggest-out');
   const saveBtn = card.querySelector('.price-save-btn');
   const cogsOnlyBtn = card.querySelector('.cogs-only-save-btn');
@@ -1331,13 +1342,24 @@ function bindPriceCard(card) {
     profitOut.classList.toggle('pos', row.profit >= 0);
     const profit = row.profit;
 
-    if (profit < 0) {
-      // A 15%-margin target is mathematically unreachable once commission%
-      // + tax% + 15% >= 100% (suggestPrice's denominator goes non-positive)
-      // — happens for real at very high Ozon commission rates. Fall back to
-      // a break-even (0% margin) suggestion instead of just showing nothing.
-      let suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 15, taxPct, acquiring);
-      let label = 'Чтобы выйти в плюс';
+    // Маржа = прибыль как % от цены — независимая от знака прибыли метрика,
+    // так что показываем её и сравниваем с целевой маржой из настроек
+    // кабинета всегда, не только для убыточных товаров: товар может быть
+    // в плюс, но всё равно не дотягивать до заданной цели.
+    const marginPct = price > 0 ? (profit / price) * 100 : 0;
+    const belowTarget = marginPct < targetMarginPct;
+    marginOut.textContent = marginPct.toFixed(1) + '%' + (targetMarginPct > 0 ? ` (цель ${targetMarginPct}%)` : '');
+    marginOut.classList.toggle('neg', belowTarget);
+    marginOut.classList.toggle('pos', !belowTarget);
+
+    if (belowTarget) {
+      // The target margin can itself be mathematically unreachable once
+      // commission% + tax% + targetMarginPct% >= 100% (suggestPrice's
+      // denominator goes non-positive) — happens for real at very high
+      // Ozon commission rates. Fall back to a break-even (0% margin)
+      // suggestion instead of just showing nothing.
+      let suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, targetMarginPct, taxPct, acquiring);
+      let label = targetMarginPct > 0 ? `Для маржи ${targetMarginPct}%` : 'Чтобы выйти в ноль';
       if (!suggested) {
         suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 0, taxPct, acquiring);
         label = 'Чтобы выйти в ноль';
@@ -1346,28 +1368,24 @@ function bindPriceCard(card) {
         const { profit: newProfit } = computePriceRow(suggested, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus);
         suggestOut.innerHTML = `${label}: цена от <b>${fmtMoney(suggested)}</b> (прибыль ${fmtMoney(newProfit)})`;
       } else if (!suggested) {
-        suggestOut.innerHTML = `При комиссии ${commissionPct}%${taxPct ? ' и налоге ' + taxPct + '%' : ''} выйти в плюс невозможно ни по какой цене`;
+        suggestOut.innerHTML = `При комиссии ${commissionPct}%${taxPct ? ' и налоге ' + taxPct + '%' : ''} эту маржу набрать невозможно ни по какой цене`;
       } else {
         suggestOut.textContent = '';
       }
-      // Not disabled — a loss at this price can be a deliberate call (a
-      // loss-leader, a data-quality doubt about the shown commission%),
-      // so it stays the user's decision. The save handler asks for an
-      // explicit confirm() before staging it, instead of silently
-      // blocking the button outright.
-      saveBtn.disabled = false;
-      saveBtn.style.opacity = '1';
-      const isStaged = pendingPriceChanges[offerId] !== undefined;
-      saveBtn.className = 'price-save-btn ' + (isStaged ? 'staged-btn' : 'warn');
-      saveBtn.textContent = isStaged ? 'В очереди на отправку ✓' : 'Сохранить в убыток';
     } else {
       suggestOut.textContent = '';
-      saveBtn.disabled = false;
-      saveBtn.style.opacity = '1';
-      const isStaged = pendingPriceChanges[offerId] !== undefined;
-      saveBtn.className = 'price-save-btn ' + (isStaged ? 'staged-btn' : 'pos');
-      saveBtn.textContent = isStaged ? 'В очереди на отправку ✓' : 'Сохранить';
     }
+
+    // Save stays enabled even at a loss — a loss at this price can be a
+    // deliberate call (a loss-leader, a data-quality doubt about the shown
+    // commission%), so it stays the user's decision. The save handler asks
+    // for an explicit confirm() before staging it, instead of silently
+    // blocking the button outright.
+    saveBtn.disabled = false;
+    saveBtn.style.opacity = '1';
+    const isStaged = pendingPriceChanges[offerId] !== undefined;
+    saveBtn.className = 'price-save-btn ' + (isStaged ? 'staged-btn' : (profit < 0 ? 'warn' : 'pos'));
+    saveBtn.textContent = isStaged ? 'В очереди на отправку ✓' : 'Сохранить';
   }
 
   priceInput.addEventListener('input', recalc);
