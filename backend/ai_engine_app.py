@@ -385,6 +385,13 @@ def _compute_fixed_totals_sync(cabinet_id: int, date_from: str, date_to: str):
         oa["item_fees"] += a["item_fees"]
         oa["bonus"] += a.get("bonus", 0.0)
 
+    # DIAGNOSTIC: SKUs present in accrual data but with no sku_to_offer
+    # mapping at all (their posting isn't in this period's postings list by
+    # creation date, even though its accrual entry falls in this date range
+    # by accrual date) — their delivery contribution is silently dropped.
+    orphan_skus = [s for s in per_sku_accrual if s not in {str(k) for k in sku_to_offer}]
+    orphan_delivery_total = sum(per_sku_accrual[s]["delivery"] for s in orphan_skus)
+
     total_revenue = totals_buyouts["revenue"]
     total_commission = total_item_fees = total_bonus = total_cogs = total_tax = 0.0
     for offer_id, p in per_offer_buyouts.items():
@@ -409,6 +416,8 @@ def _compute_fixed_totals_sync(cabinet_id: int, date_from: str, date_to: str):
         "cogs_total": round(total_cogs, 2), "tax": round(total_tax, 2),
         "payout_real": round(total_payout_real, 2), "profit": round(total_profit, 2),
         "cancelled_after_ship_count": cancelled_after_ship_count,
+        "orphan_skus_count": len(orphan_skus),
+        "orphan_delivery_total": round(orphan_delivery_total, 2),
     }
 
 
