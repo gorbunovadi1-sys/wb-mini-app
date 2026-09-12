@@ -388,7 +388,7 @@ def debug_ozon_accrual_full_scan(cabinet_id: int, telegram_id: int, date_from: s
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["marketplace"] != "ozon":
         raise HTTPException(status_code=400, detail="not an Ozon cabinet")
-    client = _build_client(cabinet, ozon_max_retries=3)
+    client = _build_client(cabinet, ozon_max_retries=1)
     import datetime as _dt
     d = _dt.date.fromisoformat(date_from)
     end = _dt.date.fromisoformat(date_to)
