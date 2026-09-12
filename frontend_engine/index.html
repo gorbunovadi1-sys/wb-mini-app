@@ -279,6 +279,7 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 }
 .price-save-btn.pos { background: var(--accent-gradient); color: var(--accent-text-on); box-shadow: var(--glow); }
 .price-save-btn.staged-btn { background: var(--positive); color: #06281c; }
+.price-save-btn.warn { background: transparent; border: 1px solid var(--negative); color: var(--negative); }
 .cogs-only-save-btn {
   border: 1px solid var(--border); border-radius: 8px; padding: 7px 14px; background: transparent; color: var(--text-secondary);
   font-family: var(--font); font-size: 11.5px; font-weight: 600; cursor: pointer;
@@ -1349,10 +1350,16 @@ function bindPriceCard(card) {
       } else {
         suggestOut.textContent = '';
       }
-      saveBtn.className = 'price-save-btn';
-      saveBtn.style.opacity = '0.4';
-      saveBtn.disabled = true;
-      saveBtn.textContent = 'Прибыль отрицательная';
+      // Not disabled — a loss at this price can be a deliberate call (a
+      // loss-leader, a data-quality doubt about the shown commission%),
+      // so it stays the user's decision. The save handler asks for an
+      // explicit confirm() before staging it, instead of silently
+      // blocking the button outright.
+      saveBtn.disabled = false;
+      saveBtn.style.opacity = '1';
+      const isStaged = pendingPriceChanges[offerId] !== undefined;
+      saveBtn.className = 'price-save-btn ' + (isStaged ? 'staged-btn' : 'warn');
+      saveBtn.textContent = isStaged ? 'В очереди на отправку ✓' : 'Сохранить в убыток';
     } else {
       suggestOut.textContent = '';
       saveBtn.disabled = false;
@@ -1388,6 +1395,10 @@ function bindPriceCard(card) {
     const price = parseFloat(priceInput.value) || 0;
     const cogs = parseFloat(cogsInput.value) || 0;
     if (price <= 0) { alert('Укажи цену'); return; }
+    const row = computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus);
+    if (row.profit < 0 && !confirm(`Прибыль со штуки при этой цене отрицательная (${fmtMoney(row.profit)}). Всё равно поставить цену в очередь на отправку в Ozon?`)) {
+      return;
+    }
     saveBtn.disabled = true; saveBtn.textContent = 'Сохранение…';
     try {
       if (cogs > 0) {
