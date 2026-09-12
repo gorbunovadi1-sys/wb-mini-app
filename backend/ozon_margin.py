@@ -434,13 +434,19 @@ def build_margin_summary(
         # under Вознаграждение Ozon (commission) — kept separate here rather
         # than netted into commission, so the displayed commission still
         # reflects the seller's real, expected rate (not artificially small).
-        # `revenue` comes from accrual's `sale_price` (see
-        # _fetch_accrual_for_day), NOT the posting-list price — this is what
-        # makes returns net out automatically (a return posts a negative
-        # sale_price entry for the same posting_number/unit_number), and
-        # matches Дарья's real "Выручка" exactly (verified to the kopeck).
-        # qty still comes from the postings list.
-        revenue = accrual["revenue"]
+        # `revenue` comes from the postings list (_real_unit_price →
+        # customer_price), not accrual's `sale_price` — sale_price matches
+        # "Выручка" exactly for a single sale, and a return does post a
+        # matching negative sale_price entry for the same posting_number,
+        # but netting them only works when both the original sale's accrual
+        # AND the return's accrual fall in the SAME fetch window. Verified
+        # live this often isn't true (an order placed in July can be
+        # returned — and accrue the reversal — in August), which made a
+        # single calendar-month window systematically UNDER-count revenue
+        # for returns whose original sale accrued in a prior month. Proper
+        # returns tracking needs a wider or return-aware window design, not
+        # attempted here — see project_ozon_accrual_api_gap memory.
+        revenue = p["revenue"]
         commission = abs(accrual["commission"])
         delivery = abs(accrual["delivery"])
         item_fees = abs(accrual["item_fees"])
@@ -468,10 +474,7 @@ def build_margin_summary(
         })
     products.sort(key=lambda x: -x["revenue"])
 
-    # NOT totals_buyouts["revenue"] (posting-list price, a static snapshot
-    # that never reflects a later return) — accrual-based revenue nets
-    # returns out automatically, see the products loop above.
-    total_revenue = sum(pr["revenue"] for pr in products)
+    total_revenue = totals_buyouts["revenue"]
     total_commission = sum(pr["commission"] for pr in products)
     # NOT sum(pr["delivery"] for pr in products) — the products list only
     # covers offers with buyout revenue, but delivery is shipped-scoped

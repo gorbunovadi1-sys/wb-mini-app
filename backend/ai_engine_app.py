@@ -403,13 +403,13 @@ def _compute_totals_verify_sync(cabinet_id: int, date_from: str, date_to: str):
     total_revenue = total_commission = total_delivery = total_item_fees = total_bonus = total_cogs = total_tax = 0.0
     for offer_id, p in per_offer_buyouts.items():
         accrual = per_offer_accrual.get(offer_id, {"revenue": 0.0, "commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
-        total_revenue += accrual["revenue"]
+        total_revenue += p["revenue"]
         total_commission += abs(accrual["commission"])
         total_item_fees += abs(accrual["item_fees"])
         total_bonus += accrual["bonus"]
         cogs_unit = cost_prices.get(offer_id, 0)
         total_cogs += cogs_unit * p["qty"]
-        total_tax += accrual["revenue"] * (tax_pct / 100)
+        total_tax += p["revenue"] * (tax_pct / 100)
     total_delivery = sum(abs(a["delivery"]) for a in per_offer_accrual.values())
 
     total_payout_real = total_revenue + total_bonus - total_commission - total_delivery - total_item_fees - other_fees_cost
