@@ -277,6 +277,11 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .price-margin-row .pm-value.pos { color: var(--positive); }
 .price-suggest { font-size: 10.5px; color: var(--text-secondary); margin-top: 4px; }
 .price-suggest b { color: var(--positive); font-family: var(--font-mono); }
+.price-bracket-warn { background: var(--warn-bg); color: var(--warn-text); border-radius: 8px; padding: 8px 10px; margin-top: 8px; font-size: 10.5px; line-height: 1.4; }
+.price-bracket-warn .bracket-refresh-btn {
+  display: block; margin-top: 6px; border: 1px solid var(--warn-text); border-radius: 6px; background: transparent; color: var(--warn-text);
+  font-family: var(--font); font-size: 10.5px; font-weight: 600; padding: 5px 10px; cursor: pointer;
+}
 .price-save-row { margin-top: 10px; display: flex; justify-content: flex-end; gap: 8px; }
 .price-save-btn {
   border: none; border-radius: 8px; padding: 7px 14px; font-family: var(--font); font-size: 11.5px; font-weight: 700; cursor: pointer;
@@ -1271,7 +1276,7 @@ function priceCardHtml(p) {
   return `<div class="price-card ${staged ? 'staged' : ''}" data-offer="${p.offer_id}"
       data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-tax="${p.tax_pct || 0}"
       data-acquiring="${p.acquiring || 0}" data-bonus="${p.bonus || 0}" data-old-price="${p.old_price || 0}"
-      data-target-margin="${p.min_margin_pct || 0}">
+      data-target-margin="${p.min_margin_pct || 0}" data-live-price="${p.price || 0}">
     <div class="p-name">${p.name}</div>
     <div class="p-offer copy-chip" data-copy="${p.offer_id}">${p.offer_id}</div>
     <div class="price-fields">
@@ -1295,7 +1300,7 @@ function priceCardHtml(p) {
         <div class="expense-row"><span>Расходы всего</span><span class="eb-total">—</span></div>
       </div>
       <div class="expense-detail">
-        <div class="expense-row"><span>Комиссия (${p.commission_pct}%)</span><span class="eb-commission">—</span></div>
+        <div class="expense-row"><span>Комиссия (<span class="eb-commission-pct">${p.commission_pct}</span>%)</span><span class="eb-commission">—</span></div>
         <div class="expense-row"><span>Логистика</span><span class="eb-logistics">—</span></div>
         <div class="expense-row"><span>Эквайринг</span><span class="eb-acquiring">—</span></div>
         <div class="expense-row"><span>Налог${p.tax_pct ? ` (${p.tax_pct}%)` : ''}</span><span class="eb-tax">—</span></div>
@@ -1310,6 +1315,10 @@ function priceCardHtml(p) {
       <span class="pm-value margin-out">—</span>
     </div>
     <div class="price-suggest suggest-out"></div>
+    <div class="price-bracket-warn" style="display:none">
+      <span class="bracket-warn-text">⚠️ Эта цена в другом ценовом диапазоне Ozon (границы 100₽/300₽) — показанный процент комиссии посчитан для прежней цены и может быть неточным для новой.</span>
+      <button class="bracket-refresh-btn">Обновить комиссию</button>
+    </div>
     <div class="price-save-row">
       <button class="cogs-only-save-btn" title="Сохранить только себестоимость, без отправки цены в Ozon">Сохранить себестоимость</button>
       <button class="price-save-btn">Сохранить</button>
@@ -1317,15 +1326,32 @@ function priceCardHtml(p) {
   </div>`;
 }
 
+function priceBracket(v) {
+  // Ozon's own rate-card boundaries (до 100 / свыше 100 до 300 / свыше
+  // 300 руб.) — verified against Дарья's own "Таблица категорий для
+  // расчёта вознаграждения" export, same three brackets for every category.
+  if (!v) return null;
+  if (v <= 100) return 0;
+  if (v <= 300) return 1;
+  return 2;
+}
+
 function bindPriceCard(card) {
   const offerId = card.dataset.offer;
-  const commissionPct = parseFloat(card.dataset.commission) || 0;
-  const logisticsEstimate = parseFloat(card.dataset.logistics) || 0;
+  // `let`, not `const` — "Обновить комиссию" overwrites these in place
+  // after a fresh live fetch, once the user has actually pushed a price
+  // that crossed into a different Ozon commission bracket (see
+  // priceBracket): Ozon's API only ever reports the rate for whatever
+  // price is CURRENTLY live there, never other brackets', so the only way
+  // to learn the new bracket's real rate is to push the price and re-fetch.
+  let commissionPct = parseFloat(card.dataset.commission) || 0;
+  let logisticsEstimate = parseFloat(card.dataset.logistics) || 0;
   const taxPct = parseFloat(card.dataset.tax) || 0;
-  const acquiring = parseFloat(card.dataset.acquiring) || 0;
-  const bonus = parseFloat(card.dataset.bonus) || 0;
-  const oldPriceOriginal = parseFloat(card.dataset.oldPrice) || 0;
+  let acquiring = parseFloat(card.dataset.acquiring) || 0;
+  let bonus = parseFloat(card.dataset.bonus) || 0;
+  let oldPriceOriginal = parseFloat(card.dataset.oldPrice) || 0;
   const targetMarginPct = parseFloat(card.dataset.targetMargin) || 0;
+  let livePrice = parseFloat(card.dataset.livePrice) || 0;
   const priceInput = card.querySelector('.price-input');
   const cogsInput = card.querySelector('.cogs-price-input');
   const profitOut = card.querySelector('.profit-out');
@@ -1334,10 +1360,13 @@ function bindPriceCard(card) {
   const saveBtn = card.querySelector('.price-save-btn');
   const cogsOnlyBtn = card.querySelector('.cogs-only-save-btn');
   const ebCommission = card.querySelector('.eb-commission');
+  const ebCommissionPct = card.querySelector('.eb-commission-pct');
   const ebLogistics = card.querySelector('.eb-logistics');
   const ebAcquiring = card.querySelector('.eb-acquiring');
   const ebTax = card.querySelector('.eb-tax');
   const ebTotal = card.querySelector('.eb-total');
+  const bracketWarn = card.querySelector('.price-bracket-warn');
+  const bracketRefreshBtn = card.querySelector('.bracket-refresh-btn');
   const expenseToggle = card.querySelector('.expense-toggle');
   if (expenseToggle) {
     expenseToggle.addEventListener('click', () => {
@@ -1349,6 +1378,11 @@ function bindPriceCard(card) {
     const price = parseFloat(priceInput.value) || 0;
     const cogs = parseFloat(cogsInput.value) || 0;
     const row = computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus);
+    if (ebCommissionPct) ebCommissionPct.textContent = commissionPct;
+    if (bracketWarn) {
+      const crossed = priceBracket(livePrice) !== null && priceBracket(price) !== null && priceBracket(livePrice) !== priceBracket(price);
+      bracketWarn.style.display = crossed ? '' : 'none';
+    }
     ebCommission.textContent = '−' + fmtMoney(row.commission);
     ebLogistics.textContent = '−' + fmtMoney(row.logistics);
     ebAcquiring.textContent = '−' + fmtMoney(row.acquiring);
@@ -1407,6 +1441,39 @@ function bindPriceCard(card) {
 
   priceInput.addEventListener('input', recalc);
   cogsInput.addEventListener('input', recalc);
+
+  if (bracketRefreshBtn) {
+    bracketRefreshBtn.addEventListener('click', async () => {
+      // Ozon only ever reports the commission for whatever price is
+      // CURRENTLY live on its side — there's no "what if" endpoint for a
+      // hypothetical price in a different bracket. So this only becomes
+      // accurate once the new price has actually been pushed (via
+      // "Сохранить" + the send bar) and Ozon has recalculated server-side;
+      // re-fetching too soon after pushing may still show the old rate.
+      bracketRefreshBtn.disabled = true;
+      bracketRefreshBtn.textContent = 'Обновляю…';
+      try {
+        const data = await apiFetch(`/api/cabinets/${activeCabinetId}/ozon/pricing`);
+        const fresh = (data.items || []).find(i => i.offer_id === offerId);
+        if (!fresh) {
+          alert('Товар не найден в свежих данных Ozon');
+        } else {
+          commissionPct = fresh.commission_pct;
+          logisticsEstimate = fresh.logistics_estimate;
+          acquiring = fresh.acquiring || 0;
+          bonus = fresh.bonus || 0;
+          oldPriceOriginal = fresh.old_price || 0;
+          livePrice = fresh.price || 0;
+          recalc();
+        }
+      } catch (e) {
+        alert('Не удалось обновить комиссию: ' + e.message);
+      } finally {
+        bracketRefreshBtn.disabled = false;
+        bracketRefreshBtn.textContent = 'Обновить комиссию';
+      }
+    });
+  }
 
   cogsOnlyBtn.addEventListener('click', async () => {
     const cogs = parseFloat(cogsInput.value) || 0;
