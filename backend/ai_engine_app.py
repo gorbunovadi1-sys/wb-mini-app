@@ -355,18 +355,79 @@ def debug_ozon_return_entry(cabinet_id: int, telegram_id: int, date_str: str, un
 _totals_verify_state = {}
 
 
+def _compute_totals_verify_sync(cabinet_id: int, date_from: str, date_to: str):
+    """Uses cached postings (Ozon is rate-limiting hard right now, avoid a
+    live posting-list fetch) but a fresh LIVE accrual fetch through the
+    just-shipped sale_price-based revenue fix, so the before/after can be
+    verified against Дарья's real reconciled August total (975,175.31₽)
+    without a full cache rebuild."""
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    cost_prices = cabinets.get_cost_prices(cabinet_id)
+    tax_pct = cabinet.get("settings", {}).get("tax_pct", 0)
+    cached = ozon_sales_cache.get(cabinet_id)
+    if not cached:
+        raise RuntimeError("no cache for this cabinet")
+    cpostings = cached[0]
+    import datetime as _dt
+    d_from = _dt.date.fromisoformat(date_from)
+    d_to = _dt.date.fromisoformat(date_to)
+    postings = ozon_margin._slice_postings(cpostings, d_from, d_to)
+
+    import collections as _collections
+    per_offer_orders = _collections.defaultdict(ozon_margin._empty_bucket)
+    per_offer_buyouts = _collections.defaultdict(ozon_margin._empty_bucket)
+    daily = _collections.defaultdict(lambda: {"revenue": 0.0, "qty": 0})
+    totals_orders = ozon_margin._empty_bucket()
+    totals_buyouts = ozon_margin._empty_bucket()
+    totals_cancelled = ozon_margin._empty_bucket()
+    sku_to_offer = {}
+    ozon_margin._accumulate_postings(postings, per_offer_orders, per_offer_buyouts, daily, totals_orders, totals_buyouts, totals_cancelled, sku_to_offer)
+
+    buyout_posting_numbers, shipped_posting_numbers = ozon_margin.accrual_scope_sets(postings)
+    client = _build_client(cabinet, ozon_max_retries=2)
+    per_sku_accrual, non_item_total = ozon_margin._fetch_accrual_breakdown(client, d_from, d_to, buyout_posting_numbers, shipped_posting_numbers)
+    other_fees_cost = abs(non_item_total)
+
+    per_offer_accrual = _collections.defaultdict(lambda: {"revenue": 0.0, "commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
+    for sku, offer_id in sku_to_offer.items():
+        a = per_sku_accrual.get(str(sku))
+        if not a:
+            continue
+        oa = per_offer_accrual[offer_id]
+        oa["revenue"] += a.get("revenue", 0.0)
+        oa["commission"] += a["commission"]
+        oa["delivery"] += a["delivery"]
+        oa["item_fees"] += a["item_fees"]
+        oa["bonus"] += a.get("bonus", 0.0)
+
+    total_revenue = total_commission = total_delivery = total_item_fees = total_bonus = total_cogs = total_tax = 0.0
+    for offer_id, p in per_offer_buyouts.items():
+        accrual = per_offer_accrual.get(offer_id, {"revenue": 0.0, "commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
+        total_revenue += accrual["revenue"]
+        total_commission += abs(accrual["commission"])
+        total_item_fees += abs(accrual["item_fees"])
+        total_bonus += accrual["bonus"]
+        cogs_unit = cost_prices.get(offer_id, 0)
+        total_cogs += cogs_unit * p["qty"]
+        total_tax += accrual["revenue"] * (tax_pct / 100)
+    total_delivery = sum(abs(a["delivery"]) for a in per_offer_accrual.values())
+
+    total_payout_real = total_revenue + total_bonus - total_commission - total_delivery - total_item_fees - other_fees_cost
+    total_profit = total_payout_real - total_cogs - total_tax
+    return {
+        "revenue": round(total_revenue, 2), "commission": round(total_commission, 2),
+        "bonus": round(total_bonus, 2), "delivery": round(total_delivery, 2),
+        "item_fees": round(total_item_fees, 2), "other_fees": round(other_fees_cost, 2),
+        "cogs_total": round(total_cogs, 2), "tax": round(total_tax, 2),
+        "payout_real": round(total_payout_real, 2), "profit": round(total_profit, 2),
+    }
+
+
 async def _run_totals_verify(cabinet_id: int, date_from: str, date_to: str):
     state = _totals_verify_state[cabinet_id] = {"running": True}
     try:
-        cabinet = cabinets.get_cabinet(cabinet_id)
-        cost_prices = cabinets.get_cost_prices(cabinet_id)
-        tax_pct = cabinet.get("settings", {}).get("tax_pct", 0)
-        client = _build_client(cabinet, ozon_max_retries=2)
-        result = await asyncio.to_thread(
-            ozon_margin.build_margin_summary,
-            client=client, cost_prices=cost_prices, date_from=date_from, date_to=date_to, tax_pct=tax_pct,
-        )
-        state["account"] = result.get("account", {})
+        account = await asyncio.to_thread(_compute_totals_verify_sync, cabinet_id, date_from, date_to)
+        state["account"] = account
         state["error"] = None
     except Exception as e:
         state["error"] = str(e)
