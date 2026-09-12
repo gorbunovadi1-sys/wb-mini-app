@@ -21,22 +21,46 @@ def _empty_bucket():
     return {"revenue": 0.0, "qty": 0}
 
 
+def _real_unit_price(posting: dict, idx: int, prod: dict) -> float:
+    """Ozon's posting-list `products[].price` is the NOMINAL reference price
+    used to compute commission (matches accrual/by-day's `commission.
+    seller_price` — verified live, both equal 48%-of-this-field) — it is NOT
+    what the customer actually paid, and NOT what Ozon's own reports count
+    as "Выручка". The real recognized revenue (verified exactly, to the
+    ruble, against Дарья's own official Ozon "Юнит-экономика" export — its
+    "Прибыль за период" column reproduces exactly from Выручка+Баллы+
+    Программы minus costs) is `financial_data.products[].customer_price`,
+    often 40-50% lower on a heavily-discounted item — this was the real
+    cause of Дашборд totals running ~2x too high, not any of the categories
+    investigated earlier. `financial_data.products` is a parallel array to
+    `products` (same order, same length in every posting checked); falls
+    back to the nominal `price` if financial_data is missing/short (very old
+    postings, or a shape Ozon hasn't sent here yet) so this never raises."""
+    fd_products = (posting.get("financial_data") or {}).get("products") or []
+    if idx < len(fd_products):
+        customer_price = fd_products[idx].get("customer_price")
+        if customer_price is not None:
+            return float(customer_price)
+    return float(prod.get("price") or 0)
+
+
 def _accumulate_postings(postings, per_offer_orders, per_offer_buyouts, daily, totals_orders, totals_buyouts, totals_cancelled, sku_to_offer):
     """Splits FBS+FBO postings into 'orders' (all non-cancelled), 'buyouts'
     (status=delivered only) and 'cancelled' (tracked separately so a
-    cancelled order's seller-price revenue is visible on its own, instead of
-    just vanishing), both per-offer (for orders/buyouts) and account-wide,
-    plus a daily orders series for the chart. Only revenue/qty come from
-    here now — real commission/delivery/fees come from accrual/by-day (see
-    _fetch_accrual_breakdown), which financial_data.payout turned out to
-    NOT include (verified live: payout was missing the delivery deduction
-    entirely, silently overstating profit by the shipping cost)."""
+    cancelled order's revenue is visible on its own, instead of just
+    vanishing), both per-offer (for orders/buyouts) and account-wide, plus a
+    daily orders series for the chart. Revenue uses the real customer-paid
+    price (see _real_unit_price) — real commission/delivery/fees come from
+    accrual/by-day (see _fetch_accrual_breakdown), which financial_data.
+    payout turned out to NOT include (verified live: payout was missing the
+    delivery deduction entirely, silently overstating profit by the
+    shipping cost)."""
     for posting in postings:
         status = posting.get("status")
         if status in EXCLUDED_STATUSES:
-            for prod in posting.get("products", []):
+            for idx, prod in enumerate(posting.get("products", [])):
                 qty = prod.get("quantity") or 0
-                price = float(prod.get("price") or 0)
+                price = _real_unit_price(posting, idx, prod)
                 totals_cancelled["revenue"] += price * qty
                 totals_cancelled["qty"] += qty
             continue
@@ -44,7 +68,7 @@ def _accumulate_postings(postings, per_offer_orders, per_offer_buyouts, daily, t
         date_str = ts[:10]
         is_buyout = status in BUYOUT_STATUSES
 
-        for prod in posting.get("products", []):
+        for idx, prod in enumerate(posting.get("products", [])):
             offer_id = prod.get("offer_id")
             if not offer_id:
                 continue
@@ -52,7 +76,7 @@ def _accumulate_postings(postings, per_offer_orders, per_offer_buyouts, daily, t
             if sku:
                 sku_to_offer[sku] = offer_id
             qty = prod.get("quantity") or 0
-            price = float(prod.get("price") or 0)
+            price = _real_unit_price(posting, idx, prod)
             revenue = price * qty
 
             po = per_offer_orders[offer_id]
