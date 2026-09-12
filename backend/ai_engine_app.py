@@ -336,6 +336,22 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
 
 
 
+@app.get("/api/_debug/ozon-force-refresh/{cabinet_id}")
+def debug_ozon_force_refresh(cabinet_id: int, telegram_id: int):
+    """TEMPORARY — force an immediate cache rebuild for one cabinet (bypasses
+    the 3h schedule and the 30min recently-refreshed skip), so a just-shipped
+    accrual-logic fix shows up in the Дашборд right away instead of waiting
+    for the next scheduled tick. Remove after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet, ozon_max_retries=3)
+    ozon_sales_cache.refresh(client, cabinet_id)
+    return {"status": "refreshed"}
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
