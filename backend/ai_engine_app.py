@@ -362,7 +362,7 @@ def debug_ozon_product_detail(cabinet_id: int, telegram_id: int, date_from: str,
         if needle in (p.get("offer_id") or "").lower().replace(" ", "").replace("-", "")
         or needle in (p.get("title") or "").lower().replace(" ", "").replace("-", "")
     ]
-    return {"matches": matches, "tax_pct": tax_pct, "products_count": len(result.get("products", []))}
+    return {"matches": matches, "tax_pct": tax_pct, "products_count": len(result.get("products", [])), "account": result.get("account")}
 
 
 @app.get("/api/_debug/ozon-force-refresh/{cabinet_id}")
