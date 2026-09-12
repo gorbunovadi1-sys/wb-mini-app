@@ -440,8 +440,14 @@ async function apiFetch(path, opts) {
 }
 
 function fmtMoney(v) {
-  const sign = v < 0 ? '−' : '';
-  return sign + Math.round(Math.abs(v)).toLocaleString('ru-RU') + ' ₽';
+  const rounded = Math.round(Math.abs(v));
+  // Deciding the sign from the rounded magnitude (not the raw value) avoids
+  // "−0 ₽" — suggestPrice's break-even target lands on a profit of exactly
+  // 0 mathematically, but floating-point division/multiplication leaves a
+  // tiny residual (e.g. -0.3) that rounds to 0 yet still reads as negative
+  // if the sign check runs before rounding.
+  const sign = v < 0 && rounded !== 0 ? '−' : '';
+  return sign + rounded.toLocaleString('ru-RU') + ' ₽';
 }
 function fmtNum(v) { return Math.round(v).toLocaleString('ru-RU'); }
 function rateSourceBadge(source) {
@@ -1289,7 +1295,6 @@ function priceCardHtml(p) {
       <div class="expense-row"><span>Эквайринг</span><span class="eb-acquiring">—</span></div>
       <div class="expense-row"><span>Налог${p.tax_pct ? ` (${p.tax_pct}%)` : ''}</span><span class="eb-tax">—</span></div>
     </div>
-    ${p.rate_source === 'real' ? `<div class="expense-row" style="padding:0 2px;opacity:.7"><span>Бонус Ozon за баллы (справочно, не в прибыли)</span><span class="eb-bonus">—</span></div>` : ''}
     <div class="price-profit-row">
       <span class="pp-label">Прибыль со штуки</span>
       <span class="pp-value profit-out">—</span>
@@ -1325,7 +1330,6 @@ function bindPriceCard(card) {
   const ebCommission = card.querySelector('.eb-commission');
   const ebLogistics = card.querySelector('.eb-logistics');
   const ebAcquiring = card.querySelector('.eb-acquiring');
-  const ebBonus = card.querySelector('.eb-bonus');
   const ebTax = card.querySelector('.eb-tax');
 
   function recalc() {
@@ -1335,7 +1339,6 @@ function bindPriceCard(card) {
     ebCommission.textContent = '−' + fmtMoney(row.commission);
     ebLogistics.textContent = '−' + fmtMoney(row.logistics);
     ebAcquiring.textContent = '−' + fmtMoney(row.acquiring);
-    if (ebBonus) ebBonus.textContent = '+' + fmtMoney(row.bonus);
     ebTax.textContent = '−' + fmtMoney(row.tax);
     profitOut.textContent = fmtMoney(row.profit);
     profitOut.classList.toggle('neg', row.profit < 0);
