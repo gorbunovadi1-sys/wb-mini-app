@@ -8,7 +8,7 @@ import requests
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -373,6 +373,38 @@ def debug_list_cabinets(telegram_id: int):
                     entry["cache"] = None
             out.append(entry)
     return {"cabinets": out}
+
+
+@app.post("/api/_debug/trigger-cache-refresh")
+def debug_trigger_cache_refresh(cabinet_id: int, telegram_id: int, background_tasks: BackgroundTasks):
+    """TEMPORARY — manually kick one cabinet's sales-cache refresh right
+    now instead of waiting for the next 3h scheduler tick (useful for a
+    cabinet stuck on a stale/incompatible cache after a fix ships, without
+    needing to restart the whole app to re-trigger the startup refresh).
+    Runs via BackgroundTasks (after the response is sent, off the request
+    thread) using the same reduced max_retries=3 the scheduled job uses —
+    never the interactive-path default of 8 — so a slow cabinet can't tie
+    up a worker thread for its full ~165s-per-call patient schedule. Remove
+    after use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet:
+        raise HTTPException(status_code=404, detail="cabinet not found")
+
+    def _run():
+        try:
+            client = _build_client(cabinet, ozon_max_retries=3) if cabinet["marketplace"] == "ozon" else _build_client(cabinet)
+            if cabinet["marketplace"] == "ozon":
+                ozon_sales_cache.refresh(client, cabinet_id)
+            else:
+                wb_sales_cache.refresh(client, cabinet_id)
+            log.info(f"Manually-triggered cache refresh done for cabinet {cabinet_id}")
+        except Exception:
+            log.exception(f"Manually-triggered cache refresh failed for cabinet {cabinet_id}")
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "cabinet_id": cabinet_id, "marketplace": cabinet["marketplace"]}
 
 
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
