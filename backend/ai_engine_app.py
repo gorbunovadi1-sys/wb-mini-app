@@ -338,6 +338,30 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
 
 
 
+@app.get("/api/_debug/ozon-delivery-breakdown/{cabinet_id}")
+def debug_ozon_delivery_breakdown(cabinet_id: int, telegram_id: int, date_str: str, unit_number: str):
+    """TEMPORARY — raw delivery.services breakdown (by type_id) for one
+    POSTING accrual entry, to check whether a "cancelled after ship"
+    posting's delivery cost is forward-leg (type_id 32, should stay
+    excluded per Юнит-экономика's "Логистика" scope) or reverse-leg
+    (type_id 59 ReturnFlowLogistic = "Обратная логистика", which DOES have
+    its own line in her report and should NOT be excluded). Remove after
+    use."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    client = _build_client(cabinet, ozon_max_retries=2)
+    accruals = client.get_accrual_by_day(date_str)
+    matches = []
+    for a in accruals:
+        if a.get("unit_number") != unit_number or a.get("accrued_category") != "POSTING":
+            continue
+        matches.append(a)
+    return {"date": date_str, "unit_number": unit_number, "matches": matches}
+
+
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
     cabinet = cabinets.get_cabinet(cabinet_id)
     if not cabinet or cabinet["user_id"] != user_id:
