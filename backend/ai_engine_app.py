@@ -8,7 +8,7 @@ import requests
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -350,6 +350,44 @@ def debug_ozon_return_entry(cabinet_id: int, telegram_id: int, date_str: str, un
     accruals = client.get_accrual_by_day(date_str)
     matches = [a for a in accruals if a.get("unit_number") == unit_number]
     return {"date": date_str, "unit_number": unit_number, "matches_found": len(matches), "entries": matches}
+
+
+_totals_verify_state = {}
+
+
+async def _run_totals_verify(cabinet_id: int, date_from: str, date_to: str):
+    state = _totals_verify_state[cabinet_id] = {"running": True}
+    try:
+        cabinet = cabinets.get_cabinet(cabinet_id)
+        cost_prices = cabinets.get_cost_prices(cabinet_id)
+        tax_pct = cabinet.get("settings", {}).get("tax_pct", 0)
+        client = _build_client(cabinet, ozon_max_retries=2)
+        result = await asyncio.to_thread(
+            ozon_margin.build_margin_summary,
+            client=client, cost_prices=cost_prices, date_from=date_from, date_to=date_to, tax_pct=tax_pct,
+        )
+        state["account"] = result.get("account", {})
+        state["error"] = None
+    except Exception as e:
+        state["error"] = str(e)
+    state["running"] = False
+
+
+@app.get("/api/_debug/ozon-totals-verify-start/{cabinet_id}")
+def debug_ozon_totals_verify_start(cabinet_id: int, telegram_id: int, date_from: str, date_to: str, background_tasks: BackgroundTasks):
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    if _totals_verify_state.get(cabinet_id, {}).get("running"):
+        return {"status": "already running"}
+    background_tasks.add_task(_run_totals_verify, cabinet_id, date_from, date_to)
+    return {"status": "started"}
+
+
+@app.get("/api/_debug/ozon-totals-verify-status/{cabinet_id}")
+def debug_ozon_totals_verify_status(cabinet_id: int, telegram_id: int):
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    return _totals_verify_state.get(cabinet_id, {"status": "not started"})
 
 
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:

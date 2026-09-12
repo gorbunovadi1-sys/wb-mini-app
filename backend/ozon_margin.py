@@ -198,7 +198,7 @@ def _fetch_accrual_for_day(client, date_str: str, buyout_posting_numbers: set = 
     small number, and miscategorized a revenue-side credit as a
     commission-side one. Keep it separate; callers should add it to revenue
     (or otherwise credit it independently), not subtract it from commission."""
-    per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
+    per_sku = collections.defaultdict(lambda: {"revenue": 0.0, "commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
     non_item_total = 0.0
     try:
         accruals = client.get_accrual_by_day(date_str)
@@ -218,6 +218,18 @@ def _fetch_accrual_for_day(client, date_str: str, buyout_posting_numbers: set = 
                 commission = prod.get("commission") or {}
                 delivery = prod.get("delivery") or {}
                 if is_buyout_entry:
+                    # `sale_price` is the real recognized revenue — verified
+                    # exactly (to the kopeck) against Дарья's own "Отчёт по
+                    # начислениям" "Выручка" line. Unlike the posting-list's
+                    # price/customer_price (a static snapshot from when the
+                    # order was placed), this comes from the SAME accrual
+                    # ledger as commission/bonus and — crucially — a later
+                    # return shows up as a NEW POSTING entry for the same
+                    # unit_number with a NEGATIVE sale_price/bonus/
+                    # coinvestment, so summing all entries for a unit_number
+                    # nets the return out automatically. No separate
+                    # returns-tracking system needed.
+                    per_sku[sku]["revenue"] += _accrual_amount(commission, "sale_price", "amount")
                     per_sku[sku]["commission"] += _accrual_amount(commission, "commission", "amount")
                     per_sku[sku]["bonus"] += _accrual_amount(commission, "bonus", "amount") + _accrual_amount(commission, "coinvestment", "amount")
                 # Delivery is NEVER filtered by posting status — Ozon only
@@ -246,12 +258,13 @@ def _fetch_accrual_for_day(client, date_str: str, buyout_posting_numbers: set = 
 def _fetch_accrual_breakdown(client, date_from: datetime.date, date_to: datetime.date, buyout_posting_numbers: set = None, shipped_posting_numbers: set = None):
     """Real per-SKU commission/delivery/fees/bonus summed over a date range —
     one call per day, used for the live (uncached) path."""
-    per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
+    per_sku = collections.defaultdict(lambda: {"revenue": 0.0, "commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
     non_item_total = 0.0
     d = date_from
     while d <= date_to:
         day_sku, day_non_item = _fetch_accrual_for_day(client, d.isoformat(), buyout_posting_numbers, shipped_posting_numbers)
         for sku, vals in day_sku.items():
+            per_sku[sku]["revenue"] += vals.get("revenue", 0.0)
             per_sku[sku]["commission"] += vals["commission"]
             per_sku[sku]["delivery"] += vals["delivery"]
             per_sku[sku]["item_fees"] += vals["item_fees"]
@@ -279,12 +292,13 @@ def fetch_accrual_by_date(client, date_from: datetime.date, date_to: datetime.da
 
 
 def _slice_accrual_by_date(accrual_by_date: dict, non_item_by_date: dict, date_from: datetime.date, date_to: datetime.date):
-    per_sku = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
+    per_sku = collections.defaultdict(lambda: {"revenue": 0.0, "commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
     non_item_total = 0.0
     d = date_from
     while d <= date_to:
         key = d.isoformat()
         for sku, vals in (accrual_by_date.get(key) or {}).items():
+            per_sku[sku]["revenue"] += vals.get("revenue", 0.0)
             per_sku[sku]["commission"] += vals["commission"]
             per_sku[sku]["delivery"] += vals["delivery"]
             per_sku[sku]["item_fees"] += vals["item_fees"]
@@ -389,12 +403,13 @@ def build_margin_summary(
 
     # Roll per-SKU accrual up to per-offer (an offer normally maps to one SKU;
     # in the rare case Ozon assigns more than one, all are summed together).
-    per_offer_accrual = collections.defaultdict(lambda: {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
+    per_offer_accrual = collections.defaultdict(lambda: {"revenue": 0.0, "commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
     for sku, offer_id in sku_to_offer.items():
         a = per_sku_accrual.get(str(sku))
         if not a:
             continue
         oa = per_offer_accrual[offer_id]
+        oa["revenue"] += a.get("revenue", 0.0)
         oa["commission"] += a["commission"]
         oa["delivery"] += a["delivery"]
         oa["item_fees"] += a["item_fees"]
@@ -410,7 +425,7 @@ def build_margin_summary(
 
     products = []
     for offer_id, p in per_offer_buyouts.items():
-        accrual = per_offer_accrual.get(offer_id, {"commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
+        accrual = per_offer_accrual.get(offer_id, {"revenue": 0.0, "commission": 0.0, "delivery": 0.0, "item_fees": 0.0, "bonus": 0.0})
         # Ozon reports these as negative (they're deductions); store as
         # positive cost magnitudes for display, subtract explicitly below.
         # `bonus` (commission.bonus + coinvestment — Ozon's own "Баллы за
@@ -419,19 +434,26 @@ def build_margin_summary(
         # under Вознаграждение Ozon (commission) — kept separate here rather
         # than netted into commission, so the displayed commission still
         # reflects the seller's real, expected rate (not artificially small).
+        # `revenue` comes from accrual's `sale_price` (see
+        # _fetch_accrual_for_day), NOT the posting-list price — this is what
+        # makes returns net out automatically (a return posts a negative
+        # sale_price entry for the same posting_number/unit_number), and
+        # matches Дарья's real "Выручка" exactly (verified to the kopeck).
+        # qty still comes from the postings list.
+        revenue = accrual["revenue"]
         commission = abs(accrual["commission"])
         delivery = abs(accrual["delivery"])
         item_fees = abs(accrual["item_fees"])
         bonus = accrual["bonus"]
         cogs_unit = cost_prices.get(offer_id, 0)
         cogs_total = cogs_unit * p["qty"]
-        tax = p["revenue"] * (tax_pct / 100)
-        profit = p["revenue"] + bonus - commission - delivery - item_fees - cogs_total - tax
-        margin_pct = (profit / p["revenue"] * 100) if p["revenue"] else 0.0
+        tax = revenue * (tax_pct / 100)
+        profit = revenue + bonus - commission - delivery - item_fees - cogs_total - tax
+        margin_pct = (profit / revenue * 100) if revenue else 0.0
         products.append({
             "offer_id": offer_id,
             "title": p.get("name") or offer_id,
-            "revenue": round(p["revenue"], 2),
+            "revenue": round(revenue, 2),
             "qty": p["qty"],
             "commission": round(commission, 2),
             "delivery": round(delivery, 2),
@@ -446,7 +468,10 @@ def build_margin_summary(
         })
     products.sort(key=lambda x: -x["revenue"])
 
-    total_revenue = totals_buyouts["revenue"]
+    # NOT totals_buyouts["revenue"] (posting-list price, a static snapshot
+    # that never reflects a later return) — accrual-based revenue nets
+    # returns out automatically, see the products loop above.
+    total_revenue = sum(pr["revenue"] for pr in products)
     total_commission = sum(pr["commission"] for pr in products)
     # NOT sum(pr["delivery"] for pr in products) — the products list only
     # covers offers with buyout revenue, but delivery is shipped-scoped
