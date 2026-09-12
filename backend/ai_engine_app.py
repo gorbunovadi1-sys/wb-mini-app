@@ -346,11 +346,22 @@ def debug_ozon_posting_number_field(cabinet_id: int, telegram_id: int, date_str:
         raise HTTPException(status_code=400, detail="not an Ozon cabinet")
     client = _build_client(cabinet, ozon_max_retries=1)
     accruals = client.get_accrual_by_day(date_str)
-    unit_numbers = [a.get("unit_number") for a in accruals if a.get("accrued_category") == "POSTING"][:10]
+    unit_numbers = [a.get("unit_number") for a in accruals if a.get("accrued_category") == "POSTING"]
     cached = ozon_sales_cache.get(cabinet_id)
     cpostings = cached[0] if cached else []
-    posting_numbers = [p.get("posting_number") for p in cpostings if (p.get("in_process_at") or p.get("created_at") or "")[:10] == date_str][:10]
-    return {"sample_unit_numbers": unit_numbers, "sample_posting_numbers": posting_numbers}
+    all_posting_numbers = {p.get("posting_number") for p in cpostings}
+    exact_matches = [u for u in unit_numbers if u in all_posting_numbers]
+    # unit_number might be posting_number + "-<item index>" instead of an
+    # exact match — check prefix matches against posting_number too.
+    prefix_matches = [u for u in unit_numbers if any(u.startswith(pn + "-") for pn in all_posting_numbers if pn)]
+    return {
+        "unit_numbers_checked": len(unit_numbers),
+        "cached_posting_numbers_count": len(all_posting_numbers),
+        "exact_matches": len(exact_matches),
+        "prefix_matches": len(prefix_matches),
+        "sample_unit_numbers": unit_numbers[:8],
+        "sample_cached_posting_numbers": list(all_posting_numbers)[:8],
+    }
 
 
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
