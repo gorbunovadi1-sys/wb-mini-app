@@ -820,4 +820,23 @@ def refresh_cabinet_ozon_dimensions(
     return ozon_dimensions.refresh_dimensions(client=client, cabinet_id=str(cabinet_id))
 
 
-app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
+class NoCacheHtmlStaticFiles(StaticFiles):
+    """StaticFiles served no Cache-Control header at all, which left it to
+    each browser/webview's own heuristics whether to reuse a stale copy of
+    index.html without even checking back with the server — this Mini App
+    ships as a single monolithic HTML file with no separate versioned JS/CSS
+    bundle, so any UI fix could silently fail to reach a user still on an
+    old cached copy (observed live 2026-09-13: a shipped feature was
+    invisible in the actual Telegram Mini App despite being confirmed
+    present in the server's response). `no-cache` (not `no-store`) still
+    lets the browser keep a local copy and revalidate it cheaply via
+    ETag/Last-Modified (a fast 304 when unchanged) — it just forbids ever
+    using that copy WITHOUT checking first."""
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if path == "" or path.endswith(".html"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
+app.mount("/", NoCacheHtmlStaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
