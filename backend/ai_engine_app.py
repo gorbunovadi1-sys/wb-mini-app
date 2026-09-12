@@ -1,4 +1,6 @@
 import asyncio
+import collections
+import datetime as _dt
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -8,7 +10,7 @@ import requests
 from dotenv import load_dotenv
 load_dotenv()
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -324,6 +326,99 @@ def _build_client(cabinet: dict, ozon_max_retries: int = None):
             return OzonClient(creds["client_id"], creds["api_key"], max_retries=ozon_max_retries)
         return OzonClient(creds["client_id"], creds["api_key"])
     raise ValueError(f"unknown marketplace {cabinet['marketplace']}")
+
+
+_scan_state = {}
+
+
+async def _run_accrual_scan(cabinet_id: int, date_from: str, date_to: str):
+    """Background task (not a request handler) — loops every day in range
+    calling accrual/by-day with a real pause between calls, so it never
+    monopolizes a thread-pool worker the way a tight retry loop does. Writes
+    progress into _scan_state so a separate status route can poll it instead
+    of the caller holding a long-lived HTTP connection open (which is what
+    triggered Railway proxy timeouts earlier tonight)."""
+    state = _scan_state[cabinet_id] = {
+        "running": True, "days_done": 0, "days_total": 0,
+        "categories_seen": {}, "non_item_types_seen": {}, "non_item_amounts": {},
+        "item_fee_names_seen": {}, "item_fee_amounts": {}, "errors": [],
+        "sample_non_item_raw": None, "sample_item_raw": None,
+    }
+    categories_seen = collections.Counter()
+    non_item_types = collections.Counter()
+    non_item_amounts = collections.defaultdict(float)
+    item_fee_names = collections.Counter()
+    item_fee_amounts = collections.defaultdict(float)
+
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    client = _build_client(cabinet, ozon_max_retries=1)
+    d = _dt.date.fromisoformat(date_from)
+    end = _dt.date.fromisoformat(date_to)
+    state["days_total"] = (end - d).days + 1
+
+    while d <= end:
+        try:
+            accruals = await asyncio.to_thread(client.get_accrual_by_day, d.isoformat())
+        except Exception as e:
+            state["errors"].append(f"{d}: {e}")
+            accruals = []
+        for a in accruals:
+            cat = a.get("accrued_category")
+            categories_seen[cat] += 1
+            if cat == "NON_ITEM":
+                nif = a.get("non_item_fee") or {}
+                if state["sample_non_item_raw"] is None:
+                    state["sample_non_item_raw"] = a
+                key = str(nif.get("name") or nif.get("type") or nif.get("type_id") or "?")
+                non_item_types[key] += 1
+                try:
+                    non_item_amounts[key] += float((nif.get("accrued") or {}).get("amount") or 0)
+                except (TypeError, ValueError):
+                    pass
+            elif cat == "ITEM":
+                for fee_group in ((a.get("item_fees") or {}).get("fees") or []):
+                    for fee in (fee_group.get("fees") or []):
+                        if state["sample_item_raw"] is None:
+                            state["sample_item_raw"] = fee
+                        key = str(fee.get("name") or fee.get("type") or fee.get("type_id") or "?")
+                        item_fee_names[key] += 1
+                        try:
+                            item_fee_amounts[key] += float((fee.get("accrued") or {}).get("amount") or 0)
+                        except (TypeError, ValueError):
+                            pass
+        state["days_done"] += 1
+        state["categories_seen"] = dict(categories_seen)
+        state["non_item_types_seen"] = dict(non_item_types)
+        state["non_item_amounts"] = dict(non_item_amounts)
+        state["item_fee_names_seen"] = dict(item_fee_names)
+        state["item_fee_amounts"] = dict(item_fee_amounts)
+        d += _dt.timedelta(days=1)
+        await asyncio.sleep(4)
+    state["running"] = False
+
+
+@app.get("/api/_debug/ozon-scan-start/{cabinet_id}")
+def debug_ozon_scan_start(cabinet_id: int, telegram_id: int, date_from: str, date_to: str, background_tasks: BackgroundTasks):
+    """TEMPORARY — kick off _run_accrual_scan in the background and return
+    immediately, so the client never holds a long HTTP connection (that's
+    what caused Railway proxy timeouts when this was a single blocking
+    request). Poll /api/_debug/ozon-scan-status/{cabinet_id} for progress."""
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    cabinet = cabinets.get_cabinet(cabinet_id)
+    if not cabinet or cabinet["marketplace"] != "ozon":
+        raise HTTPException(status_code=400, detail="not an Ozon cabinet")
+    if _scan_state.get(cabinet_id, {}).get("running"):
+        return {"status": "already running", "state": _scan_state[cabinet_id]}
+    background_tasks.add_task(_run_accrual_scan, cabinet_id, date_from, date_to)
+    return {"status": "started"}
+
+
+@app.get("/api/_debug/ozon-scan-status/{cabinet_id}")
+def debug_ozon_scan_status(cabinet_id: int, telegram_id: int):
+    if telegram_id != int(os.environ.get("ADMIN_TELEGRAM_ID", "0")):
+        raise HTTPException(status_code=403, detail="admin only")
+    return _scan_state.get(cabinet_id, {"status": "not started"})
 
 
 def _owned_cabinet_or_404(cabinet_id: int, user_id: int) -> dict:
