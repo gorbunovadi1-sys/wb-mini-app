@@ -1360,7 +1360,7 @@ function priceCardHtml(p) {
         <div class="expense-row"><span>Комиссия (<span class="eb-commission-pct">${p.commission_pct}</span>%)</span><span class="eb-commission">—</span></div>
         <div class="expense-row"><span>Логистика</span><span class="eb-logistics">—</span></div>
         <div class="expense-row"><span>Эквайринг</span><span class="eb-acquiring">—</span></div>
-        <div class="expense-row"><span>Налог${p.tax_pct ? ` (${p.tax_pct}%)` : ''}</span><span class="eb-tax">—</span></div>
+        <div class="expense-row"><span>Налог<span class="eb-tax-pct">${p.tax_pct ? ` (${p.tax_pct}%)` : ''}</span></span><span class="eb-tax">—</span></div>
       </div>
     </div>
     <div class="price-profit-row">
@@ -1399,7 +1399,7 @@ function bindPriceCard(card) {
   // to learn the new bracket's real rate is to push the price and re-fetch.
   let commissionPct = parseFloat(card.dataset.commission) || 0;
   let logisticsEstimate = parseFloat(card.dataset.logistics) || 0;
-  const taxPct = parseFloat(card.dataset.tax) || 0;
+  let taxPct = parseFloat(card.dataset.tax) || 0;
   let acquiring = parseFloat(card.dataset.acquiring) || 0;
   let bonus = parseFloat(card.dataset.bonus) || 0;
   let oldPriceOriginal = parseFloat(card.dataset.oldPrice) || 0;
@@ -1417,6 +1417,7 @@ function bindPriceCard(card) {
   const ebLogistics = card.querySelector('.eb-logistics');
   const ebAcquiring = card.querySelector('.eb-acquiring');
   const ebTax = card.querySelector('.eb-tax');
+  const ebTaxPct = card.querySelector('.eb-tax-pct');
   const ebTotal = card.querySelector('.eb-total');
   const bracketWarnText = card.querySelector('.bracket-warn-text');
   const expenseToggle = card.querySelector('.expense-toggle');
@@ -1431,6 +1432,7 @@ function bindPriceCard(card) {
     const cogs = parseFloat(cogsInput.value) || 0;
     const row = computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus);
     if (ebCommissionPct) ebCommissionPct.textContent = commissionPct;
+    if (ebTaxPct) ebTaxPct.textContent = taxPct ? ` (${taxPct}%)` : '';
     const bracketCrossed = priceBracket(livePrice) !== null && priceBracket(price) !== null && priceBracket(livePrice) !== priceBracket(price);
     card._bracketCrossed = bracketCrossed;
     if (bracketWarnText) bracketWarnText.style.display = bracketCrossed ? '' : 'none';
@@ -1506,6 +1508,7 @@ function bindPriceCard(card) {
     bonus = fresh.bonus || 0;
     oldPriceOriginal = fresh.old_price || 0;
     livePrice = fresh.price || 0;
+    taxPct = fresh.tax_pct || 0;
     recalc();
     return stillOldPrice;
   };
@@ -2215,6 +2218,13 @@ async function saveSetting(patch, onFail) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     });
+    // Цены/Дашборд/Детализация/Остатки all cache their last fetch in a
+    // module-level variable and only refetch when that's null (see
+    // loadPricing() etc.) — a setting like tax_pct or min_margin_pct feeds
+    // straight into those calculations, so without this a saved change is
+    // silently invisible until something else happens to clear the cache
+    // (e.g. switching cabinets), which reads as "nothing changed".
+    resetCabinetCaches();
     return true;
   } catch (e) {
     alert('Не удалось сохранить: ' + e.message);
