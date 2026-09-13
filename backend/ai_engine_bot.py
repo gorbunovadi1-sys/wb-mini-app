@@ -177,6 +177,16 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
             reply_markup=_cabinets_kb(user_id, mini_app_url),
         )
 
+    @dp.message(Command("testonboarding"))
+    async def test_onboarding(message: Message):
+        """TEMPORARY — lets Дарья preview the real new-user onboarding
+        message as Telegram actually renders it, without touching her own
+        user record (which already exists, so a real /start would never
+        show it to her). Remove after she's confirmed it reads well."""
+        if not _is_admin(message.from_user.id):
+            return
+        await message.answer(_ONBOARDING_TEXT)
+
     @dp.message(Command("help"))
     async def admin_help(message: Message):
         if not _is_admin(message.from_user.id):
