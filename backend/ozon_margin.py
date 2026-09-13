@@ -322,6 +322,51 @@ def attribute_accrual_entries(entries: list, buyout_posting_numbers: set, create
     return dict(per_sku)
 
 
+def accrual_date_totals(entries: list, non_item_total: float, period_from: str, period_to: str) -> dict:
+    """Account-level totals scoped the way Ozon's OWN "Детализация
+    начислений" report is — by each entry's own accrual date, with no
+    order/posting-status gating at all (Ozon just books whatever settled
+    that day). This is a DIFFERENT period boundary than
+    attribute_accrual_entries's order-date scoping above: an order created
+    late in the period whose accrual only posts after it ends won't show up
+    here (it'll show in whatever period its accrual date actually falls
+    in), while attribute_accrual_entries's version WOULD count it, having
+    waited for the settlement to land. Neither is "wrong" — they answer
+    different questions ("what did this period's orders earn, once
+    settled" vs "what did Ozon's books say happened this period") — this
+    exists purely so Дашборд can offer a second view for reconciling
+    against her own Ozon-side report. Deliberately account-level only:
+    Детализация (per-product) always stays on the order-date view, so this
+    can't reintroduce the per-product sign-flip issues that order-date
+    scoping was built to fix — see project_ozon_accrual_api_gap in session
+    memory.
+
+    other_fees (NON_ITEM category) is passed in already period-filtered —
+    it was always accrual-date-scoped by construction (summed per calendar
+    day it was fetched for), so both views show the same number for it."""
+    revenue = commission = bonus = delivery = item_fees = 0.0
+    for e in entries:
+        if not (period_from <= e["date"] <= period_to):
+            continue
+        revenue += e["revenue"]
+        commission += e["commission"]
+        bonus += e["bonus"]
+        delivery += e["delivery"] + e.get("delivery_reverse", 0.0)
+        item_fees += e["item_fees"]
+    commission, delivery, item_fees = abs(commission), abs(delivery), abs(item_fees)
+    other_fees = abs(non_item_total)
+    payout_real = revenue + bonus - commission - delivery - item_fees - other_fees
+    return {
+        "revenue": round(revenue, 2),
+        "commission": round(commission, 2),
+        "bonus": round(bonus, 2),
+        "delivery": round(delivery, 2),
+        "item_fees": round(item_fees, 2),
+        "other_fees": round(other_fees, 2),
+        "payout_real": round(payout_real, 2),
+    }
+
+
 def _posting_date(posting: dict) -> str:
     ts = posting.get("in_process_at") or posting.get("created_at") or ""
     return ts[:10]
@@ -459,6 +504,10 @@ def build_margin_summary(
         v for k, v in non_item_by_date.items() if d_from.isoformat() <= k <= d_to.isoformat()
     )
     other_fees_cost = abs(non_item_total)
+    # "Как у Ozon" second view — see accrual_date_totals's docstring for why
+    # this legitimately differs from the totals below rather than being a
+    # bug in either.
+    accrual_view = accrual_date_totals(entries, non_item_total, d_from.isoformat(), d_to.isoformat())
 
     # sku_to_offer from the WIDE pool, not just this period's postings — a
     # return accrued this period can belong to an order (and SKU) from an
@@ -614,6 +663,11 @@ def build_margin_summary(
             "buyouts_revenue": round(totals_buyouts["revenue"], 2),
             "buyout_rate": buyout_rate,
         },
+        # Same period, scoped by accrual date instead of order date — see
+        # accrual_date_totals. Intentionally missing cogs/tax/profit/margin:
+        # those are the seller's own numbers, not something Ozon's own
+        # report has an equivalent for.
+        "accrual_view": accrual_view,
         "compare": {
             "revenue": _delta(total_revenue, prev_revenue),
             "profit": _delta(total_profit, prev_profit_approx),
