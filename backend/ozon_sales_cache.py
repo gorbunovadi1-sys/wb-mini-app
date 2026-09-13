@@ -2,9 +2,22 @@ import datetime
 import logging
 
 from .db import SessionLocal
-from .models import OzonSalesCache
+from .models import Cabinet, OzonSalesCache
 
 log = logging.getLogger("ozon_sales_cache")
+
+# A cabinet whose refresh fetched nothing new at all is put in cooldown for
+# this long before the scheduler (or a startup/redeploy kickoff) will try it
+# again — verified live 2026-09-13: with no cooldown, a cabinet stuck under
+# Ozon's sustained rate limiting got hit again on every single redeploy
+# during a long debugging session, not just every 3h, likely renewing or
+# prolonging Ozon's own limit against this Client-Id and contributing to a
+# ~1h crash loop. Stashed in the cabinet's own `settings` JSON (a private,
+# underscore-prefixed key) rather than a new DB column — no migration
+# needed, and it's cabinet-scoped exactly like the other per-cabinet state
+# already living there.
+FAILURE_COOLDOWN = datetime.timedelta(minutes=30)
+_COOLDOWN_SETTINGS_KEY = "_ozon_refresh_cooldown_until"
 
 # How far back a cabinet's cache eventually backfills to. build_margin_summary
 # needs data back to prev_d_from (an extra `days` beyond the requested
@@ -124,6 +137,15 @@ def refresh(client, cabinet_id: int):
     today = datetime.date.today()
 
     with SessionLocal() as session:
+        cabinet_row = session.get(Cabinet, cabinet_id)
+        cooldown_until_raw = (cabinet_row.settings or {}).get(_COOLDOWN_SETTINGS_KEY) if cabinet_row else None
+    if cooldown_until_raw:
+        cooldown_until = datetime.datetime.fromisoformat(cooldown_until_raw)
+        if datetime.datetime.utcnow() < cooldown_until:
+            log.info(f"Cabinet {cabinet_id}: still in cooldown after a recent failed refresh (until {cooldown_until.isoformat()}), skipping")
+            return
+
+    with SessionLocal() as session:
         existing = session.get(OzonSalesCache, cabinet_id)
         old_postings = existing.postings if existing else []
         old_accrual_entries = (existing.accrual_entries or []) if existing else []
@@ -166,7 +188,16 @@ def refresh(client, cabinet_id: int):
             )
 
     if not any([hot_postings_fresh, hot_accrual_fresh, backfill_postings_fresh, backfill_accrual_fresh]):
-        log.warning(f"Ozon sales cache refresh for cabinet {cabinet_id} fetched nothing new this run — cache left untouched")
+        log.warning(f"Ozon sales cache refresh for cabinet {cabinet_id} fetched nothing new this run — cache left untouched, entering cooldown")
+        cooldown_until = (datetime.datetime.utcnow() + FAILURE_COOLDOWN).isoformat()
+        with SessionLocal() as session:
+            cabinet_row = session.get(Cabinet, cabinet_id)
+            if cabinet_row:
+                settings = dict(cabinet_row.settings or {})
+                settings[_COOLDOWN_SETTINGS_KEY] = cooldown_until
+                cabinet_row.settings = settings
+                cabinet_row.last_error = "Ozon временно ограничивает запросы — обновление отложено"
+                session.commit()
         return
 
     # --- Merge: drop old data inside any range we successfully refreshed this cycle, keep everything else untouched, append the fresh pieces ---
@@ -214,6 +245,19 @@ def refresh(client, cabinet_id: int):
                 period_from=new_period_from.isoformat(), period_to=new_period_to.isoformat(),
             ))
         session.commit()
+
+    # Any successful fetch this cycle clears a previous cooldown/error —
+    # a cabinet that was struggling isn't stuck labeled that way forever
+    # once Ozon actually lets a request through again.
+    with SessionLocal() as session:
+        cabinet_row = session.get(Cabinet, cabinet_id)
+        if cabinet_row:
+            settings = dict(cabinet_row.settings or {})
+            settings.pop(_COOLDOWN_SETTINGS_KEY, None)
+            cabinet_row.settings = settings
+            cabinet_row.last_error = None
+            cabinet_row.last_synced_at = datetime.datetime.utcnow()
+            session.commit()
 
     backfilled_note = "fully backfilled" if new_period_from <= target_from else f"backfilling toward {target_from} (at {new_period_from})"
     log.info(
