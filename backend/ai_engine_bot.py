@@ -31,6 +31,7 @@ MARKETPLACE_LABELS = {"wb": "Wildberries", "ozon": "Ozon"}
 # breaking those the moment a title contains "<" or "&").
 _ONBOARDING_TEXT = (
     "👋 Добро пожаловать в ИИ Движок — сервис для управления продажами на Wildberries и Ozon в одном месте.\n\n"
+    "🎁 Бесплатный доступ на 7 дней, 1 кабинет — подключай WB или Ozon и пробуй.\n\n"
     "Сначала подключи кабинет (кнопки ниже) — API-ключи запрашиваются один раз, дальше всё считается само.\n\n"
     "Что внутри (кнопка «📊 Кабинет»):\n\n"
     "📈 Дашборд — ключевые цифры за период: заказы → выкупы → налог → себестоимость → логистика → комиссия → прибыль, по порядку, как деньги реально идут от заказа до итога.\n\n"
@@ -107,9 +108,9 @@ class AccessControlMiddleware(BaseMiddleware):
                 cabinets.check_access(user.id)
             except cabinets.AccessDenied as e:
                 text = (
-                    "🚫 Доступ приостановлен. Обратитесь к администратору."
+                    "🚫 Доступ приостановлен. Обратитесь к администратору: @COUTUREEE."
                     if e.reason == "blocked"
-                    else "⏳ Срок подписки истёк. Обратитесь к администратору, чтобы продлить доступ."
+                    else "⏳ Срок подписки истёк. Обратитесь к администратору, чтобы продлить доступ: @COUTUREEE."
                 )
                 if isinstance(event, CallbackQuery):
                     await event.answer(text, show_alert=True)
@@ -286,7 +287,7 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
         try:
             cabinets.check_cabinet_limit(callback.from_user.id)
         except cabinets.AccessDenied:
-            await callback.message.answer("Достигнут лимит подключённых кабинетов для твоего доступа. Обратись к администратору, чтобы расширить.")
+            await callback.message.answer("Достигнут лимит подключённых кабинетов для твоего доступа. Обратись к администратору, чтобы расширить: @COUTUREEE.")
             await callback.answer()
             return
         await state.set_state(Onboarding.entering_wb_key)
@@ -302,7 +303,7 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
         try:
             cabinets.check_cabinet_limit(callback.from_user.id)
         except cabinets.AccessDenied:
-            await callback.message.answer("Достигнут лимит подключённых кабинетов для твоего доступа. Обратись к администратору, чтобы расширить.")
+            await callback.message.answer("Достигнут лимит подключённых кабинетов для твоего доступа. Обратись к администратору, чтобы расширить: @COUTUREEE.")
             await callback.answer()
             return
         await state.set_state(Onboarding.entering_ozon_client_id)

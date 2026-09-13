@@ -13,12 +13,23 @@ class AccessDenied(Exception):
         super().__init__(reason)
 
 
+# New users get a free trial automatically (1 cabinet, 7 days) instead of the
+# unrestricted default — admin can extend/lift it later via /limit and
+# /extend, same as any other user.
+TRIAL_MAX_CABINETS = 1
+TRIAL_DAYS = 7
+
+
 def get_or_create_user(telegram_user_id: int, first_name: str = None, username: str = None) -> int:
     with SessionLocal() as session:
         user = session.query(User).filter_by(telegram_user_id=telegram_user_id).first()
         if user:
             return user.id
-        user = User(telegram_user_id=telegram_user_id, first_name=first_name, username=username)
+        user = User(
+            telegram_user_id=telegram_user_id, first_name=first_name, username=username,
+            max_cabinets=TRIAL_MAX_CABINETS,
+            access_until=datetime.datetime.utcnow() + datetime.timedelta(days=TRIAL_DAYS),
+        )
         session.add(user)
         session.commit()
         session.refresh(user)
