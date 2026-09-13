@@ -25,6 +25,15 @@ def get_or_create_user(telegram_user_id: int, first_name: str = None, username: 
         return user.id
 
 
+def user_exists(telegram_user_id: int) -> bool:
+    """Checked before get_or_create_user in /start specifically to show the
+    full onboarding instructions only the very first time — a separate
+    query rather than changing get_or_create_user's return shape, since
+    that function has several other call sites that don't care about this."""
+    with SessionLocal() as session:
+        return session.query(User).filter_by(telegram_user_id=telegram_user_id).first() is not None
+
+
 def add_cabinet(user_id: int, marketplace: str, credentials: dict, display_name: str = None) -> int:
     encrypted = encrypt(json.dumps(credentials))
     with SessionLocal() as session:

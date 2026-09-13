@@ -24,6 +24,29 @@ log = logging.getLogger("ai_engine_bot")
 
 MARKETPLACE_LABELS = {"wb": "Wildberries", "ozon": "Ozon"}
 
+# Sent once, right before the very first cabinet-connect prompt (see /start
+# below) — plain text, no HTML/Markdown, matching every other message this
+# bot sends (several interpolate raw product/cabinet titles into an
+# f-string with no escaping, so turning on parse_mode globally risks
+# breaking those the moment a title contains "<" or "&").
+_ONBOARDING_TEXT = (
+    "👋 Добро пожаловать в ИИ Движок — сервис для управления продажами на Wildberries и Ozon в одном месте.\n\n"
+    "Сначала подключи кабинет (кнопки ниже) — API-ключи запрашиваются один раз, дальше всё считается само.\n\n"
+    "Что внутри (кнопка «📊 Кабинет»):\n\n"
+    "📈 Дашборд — ключевые цифры за период: заказы → выкупы → налог → себестоимость → логистика → комиссия → прибыль, по порядку, как деньги реально идут от заказа до итога.\n\n"
+    "📊 Аналитика — графики: заказы по дням, топ-10 товаров по выручке, сравнение с прошлым таким же периодом.\n\n"
+    "🔍 Детализация — та же прибыль, но по каждому товару отдельно. Здесь вносится себестоимость по каждой позиции — без неё прибыль не считается.\n\n"
+    "💰 Цены — редактирование цены и себестоимости, комиссия/логистика/налог/маржа по факту и подсказка «до какой цены поднять, чтобы выйти в плюс или в целевую маржу». Отправляет новую цену прямо в Ozon.\n\n"
+    "🏷 Акции — какие товары сейчас в акциях Ozon, можно добавить/убрать вручную; при включённом автовыводе убыточные товары убираются сами.\n\n"
+    "📦 Остатки — сколько осталось на FBO/FBS и сколько рекомендуется довезти.\n\n"
+    "📣 Реклама — расход на рекламные кампании (пока для Wildberries).\n\n"
+    "⚙️ Настройки — важно заполнить сразу:\n"
+    "• Минимальная маржа — порог, ниже которого товар считается «невыгодным»: на это реагируют уведомления о падении маржи и автовывод из акций.\n"
+    "• Налог — твой собственный % от цены продажи (не Ozon), вычитается везде: в Дашборде, Детализации, Ценах, Акциях.\n"
+    "• Автовывод из акций и уведомления о смене габаритов/веса товара — переключатели там же.\n\n"
+    "Без себестоимости (Детализация или Цены) и налога с маржой (Настройки) прибыль будет считаться неточно — начни с них."
+)
+
 
 def _is_admin(user_id: int) -> bool:
     admin_id = os.environ.get("ADMIN_TELEGRAM_ID")
@@ -143,9 +166,12 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
     @dp.message(CommandStart())
     async def start(message: Message, state: FSMContext):
         await state.clear()
+        is_new = not cabinets.user_exists(message.from_user.id)
         user_id = cabinets.get_or_create_user(
             message.from_user.id, message.from_user.first_name, message.from_user.username,
         )
+        if is_new:
+            await message.answer(_ONBOARDING_TEXT)
         await message.answer(
             f"ИИ Движок — управляй продажами на Wildberries и Ozon в одном месте.\n\n{_cabinets_text(user_id)}",
             reply_markup=_cabinets_kb(user_id, mini_app_url),
