@@ -344,14 +344,31 @@ def _resolve_user_id(x_telegram_init_data: Optional[str], telegram_id: Optional[
     return cabinets.get_or_create_user(tg_id, tg_user.get("first_name"), tg_user.get("username"))
 
 
-def _build_client(cabinet: dict, ozon_max_retries: int = None):
+def _build_client(cabinet: dict, ozon_max_retries: int = 1):
+    """Default max_retries=1 (not OzonClient's own default of 8) — every
+    caller here is a live HTTP request a Telegram Mini App tab is actually
+    waiting on. Only the /margin route used to override this explicitly
+    (with the exact same reasoning below); every OTHER live route
+    (Цены, price pushes, stocks, promotions, ads, ...) was still building
+    clients with the patient 8-retry default, worst case ~165s per call.
+    Under Ozon's sustained rate limiting (real, observed for hours on
+    2026-09-13) that blocked a request-handling thread long enough,
+    repeated across several concurrent tabs/requests, to make the whole
+    app unresponsive to Railway's health check and get it killed —
+    twice, on the same night, before this was traced back here rather
+    than to the background scheduler (which already had its own reduced
+    retries and 90s timeout, and turned out not to be the culprit this
+    time). A live request has the platform's own reverse-proxy timeout to
+    respect regardless — one attempt (a fast, clear failure) is far
+    better than ever risking a bare unhelpful 502, and definitely better
+    than risking the whole instance. Background/scheduled jobs pass their
+    own explicit, more patient value (they can afford to wait, and don't
+    block anything a user is looking at)."""
     creds = cabinet["credentials"]
     if cabinet["marketplace"] == "wb":
         return WBClient(creds["api_key"])
     if cabinet["marketplace"] == "ozon":
-        if ozon_max_retries is not None:
-            return OzonClient(creds["client_id"], creds["api_key"], max_retries=ozon_max_retries)
-        return OzonClient(creds["client_id"], creds["api_key"])
+        return OzonClient(creds["client_id"], creds["api_key"], max_retries=ozon_max_retries)
     raise ValueError(f"unknown marketplace {cabinet['marketplace']}")
 
 
