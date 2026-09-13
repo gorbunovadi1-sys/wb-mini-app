@@ -18,7 +18,7 @@ def list_actions(client) -> list:
     ]
 
 
-def _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct=0, acquiring=0):
+def _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct=0, acquiring_pct=0):
     # No "bonus" (Баллы за скидки) here on purpose — deciding whether to
     # join/stay in a promotion is a forward-looking call, and bonus is only
     # known after a sale actually happens, tied to whether Ozon funds a
@@ -27,7 +27,11 @@ def _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct=0, acq
     # this is the other case, a decision about what to do next.
     if not price:
         return None
-    expense = price * (commission_pct / 100) + logistics_estimate + (acquiring or 0)
+    # Acquiring is a % of price (same as commission), not a flat ruble
+    # amount — a promo/candidate price can differ a lot from the item's
+    # regular price, so a flat number carried over from get_pricing_list
+    # would silently mis-price acquiring here. See ozon_pricing.py.
+    expense = price * (commission_pct / 100) + logistics_estimate + price * ((acquiring_pct or 0) / 100)
     tax = price * (tax_pct / 100)
     return round(price - cogs_unit - expense - tax, 2)
 
@@ -51,7 +55,7 @@ def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
         commission_pct = info.get("commission_pct", 0) if info else 0
         logistics_estimate = info.get("logistics_estimate", 0) if info else 0
         tax_pct = info.get("tax_pct", 0) if info else 0
-        acquiring = info.get("acquiring", 0) if info else 0
+        acquiring_pct = info.get("acquiring_pct", 0) if info else 0
         bonus = info.get("bonus", 0) if info else 0
         has_cost_price = offer_id in cost_prices
         rate_source = info.get("rate_source", "estimate") if info else "estimate"
@@ -67,7 +71,9 @@ def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
             "commission_pct": commission_pct,
             "logistics_estimate": logistics_estimate,
             "tax_pct": tax_pct,
-            "acquiring": acquiring,
+            # % of price, not a flat amount — see _profit.
+            "acquiring_pct": acquiring_pct,
+            "acquiring": round(price * acquiring_pct / 100, 2) if price else 0,
             # Kept for reference only (e.g. "this item recently earned ~X in
             # bonus") — deliberately NOT fed into the profit below. See
             # _profit's docstring.
@@ -80,7 +86,7 @@ def get_action_detail(client, cabinet_id: int, action_id: int) -> dict:
             # would look like a real number while actually excluding the
             # cost of the item entirely, which is actively misleading rather
             # than just imprecise.
-            "profit": _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct, acquiring) if (info and has_cost_price) else None,
+            "profit": _profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct, acquiring_pct) if (info and has_cost_price) else None,
         }
 
     in_action = [_enrich(p, "action_price") for p in client.get_action_products(action_id)]

@@ -29,12 +29,19 @@ def _real_rates_by_offer(cabinet_id: int):
     cabinet — callers fall back to the estimate; this never makes a live
     Ozon call on its own, so it's safe to call on every pricing/promo load.
 
-    Also returns shop_avg_acquiring — acquiring has no static "reference
+    Also returns shop_avg_acquiring_pct — acquiring has no static "reference
     rate" field in Ozon's own commissions object (unlike commission %/
     logistics, which Ozon quotes per category even for an unsold item), so
-    a product with no sales history has nothing to estimate it from. Using
-    the cabinet-wide average (total acquiring ÷ total units, across
-    everything with real data) is a far better guess than 0 for that case."""
+    a product with no sales history has nothing to estimate it from. Ozon
+    charges acquiring as a % of the item's price (its own commission-tariff
+    examples quote it as "цена × тариф банка"), not a flat per-unit ruble
+    amount — using a flat ruble average across the whole cabinet silently
+    mis-estimates it for any item priced far from the cabinet's average
+    (and, worse, stays wrong at every OTHER price the seller might type into
+    Цены/Акции, since a flat ruble number doesn't move with price the way
+    commission already does). The cabinet-wide average expressed as a %
+    (total acquiring ÷ total nominal revenue, across everything with real
+    data) is a far better guess than 0 for a product with no sales yet."""
     cached = ozon_sales_cache.get(cabinet_id)
     if not cached:
         return {}, 0
@@ -48,17 +55,9 @@ def _real_rates_by_offer(cabinet_id: int):
     except Exception:
         return {}, 0
     rates = {}
-    total_acquiring, total_qty = 0.0, 0
+    total_acquiring, total_nominal_revenue = 0.0, 0.0
     for p in result.get("products", []):
         if not p.get("qty") or not p.get("revenue"):
-            continue
-        total_acquiring += p["item_fees"]
-        total_qty += p["qty"]
-        # The cabinet-wide acquiring average above benefits from every data
-        # point, however small — but a per-offer rate entry below this many
-        # units is excluded entirely (falls through to the estimate in
-        # get_pricing_list) rather than published as "real".
-        if p["qty"] < MIN_QTY_FOR_REAL_RATE:
             continue
         # Commission is Ozon's cut of the NOMINAL price (before any
         # Ozon-funded promo discount) — the bonus/coinvestment credit is
@@ -70,8 +69,17 @@ def _real_rates_by_offer(cabinet_id: int):
         # that historically sold through a bonus-funded promo — caught live
         # (2026-09-13): a "Бур" offer showed 76-77% here against Ozon's own
         # 51% category rate card, and adding bonus back into the
-        # denominator brings it back in line.
+        # denominator brings it back in line. Acquiring is charged against
+        # the same nominal price, so it uses the same denominator.
         nominal_revenue = p["revenue"] + p["bonus"]
+        total_acquiring += p["item_fees"]
+        total_nominal_revenue += nominal_revenue
+        # The cabinet-wide acquiring average above benefits from every data
+        # point, however small — but a per-offer rate entry below this many
+        # units is excluded entirely (falls through to the estimate in
+        # get_pricing_list) rather than published as "real".
+        if p["qty"] < MIN_QTY_FOR_REAL_RATE:
+            continue
         rates[p["offer_id"]] = {
             "commission_pct": round(p["commission"] / nominal_revenue * 100, 2) if nominal_revenue else 0,
             "logistics_per_unit": round(p["delivery"] / p["qty"], 2),
@@ -80,11 +88,11 @@ def _real_rates_by_offer(cabinet_id: int):
             # it carries the same type_id — no other item-level fee type has
             # shown up) — exposed under its real name for the Цены
             # breakdown rather than the generic "сборы" label.
-            "acquiring_per_unit": round(p["item_fees"] / p["qty"], 2),
+            "acquiring_pct": round(p["item_fees"] / nominal_revenue * 100, 4) if nominal_revenue else 0,
             "bonus_per_unit": round(p["bonus"] / p["qty"], 2),
         }
-    shop_avg_acquiring = round(total_acquiring / total_qty, 2) if total_qty else 0
-    return rates, shop_avg_acquiring
+    shop_avg_acquiring_pct = round(total_acquiring / total_nominal_revenue * 100, 4) if total_nominal_revenue else 0
+    return rates, shop_avg_acquiring_pct
 
 
 def _estimate_rate(commissions: dict, fulfillment: str):
@@ -96,22 +104,32 @@ def _estimate_rate(commissions: dict, fulfillment: str):
     first-mile fee), so which one applies depends entirely on how THIS
     product actually ships — picking the wrong one silently over- or
     understates logistics cost. Field names verified against Ozon's own
-    commissions object (both fbo_* and fbs_* variants exist in parallel)."""
+    commissions object (both fbo_* and fbs_* variants exist in parallel).
+
+    Returns the components separately (trunk transit, last mile, first
+    mile/fulfillment) rather than pre-summed — Ozon's own seller-facing
+    tariff calculator shows these as separate line items ("Логистика",
+    "Последняя миля", "Обработка отправления"/fulfillment), and Цены
+    mirrors that breakdown instead of hiding it inside one "Логистика"
+    number. Callers that only want the total still just sum the three."""
     prefix = fulfillment
     sales_pct = commissions.get(f"sales_percent_{prefix}") or 0
     trunk_min = commissions.get(f"{prefix}_direct_flow_trans_min_amount") or 0
     trunk_max = commissions.get(f"{prefix}_direct_flow_trans_max_amount") or 0
-    last_mile = commissions.get(f"{prefix}_deliv_to_customer_amount") or 0
     # Trunk logistics varies by actual delivery distance/cluster — using the
     # midpoint of Ozon's own min/max range as a working estimate.
-    logistics = (trunk_min + trunk_max) / 2 + last_mile
+    trunk = round((trunk_min + trunk_max) / 2, 2)
+    last_mile = round(commissions.get(f"{prefix}_deliv_to_customer_amount") or 0, 2)
     if fulfillment == "fbo":
-        logistics += commissions.get("fbo_fulfillment_amount") or 0
+        # FBO has no seller-paid first-mile leg (the seller isn't the one
+        # shipping to the sorting center) — its equivalent up-front cost is
+        # Ozon's warehouse fulfillment/packaging fee instead.
+        first_mile = round(commissions.get("fbo_fulfillment_amount") or 0, 2)
     else:
         first_mile_min = commissions.get("fbs_first_mile_min_amount") or 0
         first_mile_max = commissions.get("fbs_first_mile_max_amount") or 0
-        logistics += (first_mile_min + first_mile_max) / 2
-    return sales_pct, round(logistics, 2)
+        first_mile = round((first_mile_min + first_mile_max) / 2, 2)
+    return sales_pct, trunk, last_mile, first_mile
 
 
 def get_pricing_list(client, cabinet_id: int) -> list:
@@ -133,7 +151,7 @@ def get_pricing_list(client, cabinet_id: int) -> list:
     # Y%)" and suggest the price needed to actually hit it, instead of only
     # the hardcoded 15%/0% break-even suggestion.
     min_margin_pct = settings.get("min_margin_pct", 0)
-    real_rates, shop_avg_acquiring = _real_rates_by_offer(cabinet_id)
+    real_rates, shop_avg_acquiring_pct = _real_rates_by_offer(cabinet_id)
 
     items = []
     for p in prices:
@@ -147,7 +165,8 @@ def get_pricing_list(client, cabinet_id: int) -> list:
         # is an authoritative sanity check for the real-data-derived rate
         # below, whatever the actual distortion mechanism turns out to be.
         fulfillment = "fbo" if stock["fbo"] > stock["fbs"] else "fbs"
-        est_sales_pct, est_logistics_estimate = _estimate_rate(commissions, fulfillment)
+        est_sales_pct, est_trunk, est_last_mile, est_first_mile = _estimate_rate(commissions, fulfillment)
+        est_logistics_estimate = round(est_trunk + est_last_mile + est_first_mile, 2)
 
         real = real_rates.get(offer_id)
         # Even after correcting for the bonus/nominal-price distortion
@@ -165,7 +184,12 @@ def get_pricing_list(client, cabinet_id: int) -> list:
         if real:
             sales_pct = real["commission_pct"]
             logistics_estimate = real["logistics_per_unit"]
-            acquiring = real["acquiring_per_unit"]
+            # Real accrual data only ever reports total delivery cost per
+            # posting, not broken into trunk/last-mile/first-mile — there's
+            # nothing to split it by, so Цены shows one "Логистика" line for
+            # these (rate_source "real"), same as before.
+            logistics_trunk = logistics_last_mile = logistics_first_mile = None
+            acquiring_pct = real["acquiring_pct"]
             bonus = real["bonus_per_unit"]
             rate_source = "real"
         else:
@@ -179,9 +203,20 @@ def get_pricing_list(client, cabinet_id: int) -> list:
             # equivalent "reference rate" field to estimate from — use the
             # cabinet-wide average instead of 0, a much better guess.
             sales_pct, logistics_estimate = est_sales_pct, est_logistics_estimate
-            acquiring = shop_avg_acquiring
+            logistics_trunk, logistics_last_mile, logistics_first_mile = est_trunk, est_last_mile, est_first_mile
+            acquiring_pct = shop_avg_acquiring_pct
             bonus = 0
             rate_source = "estimate"
+
+        # Ozon returns price as a string ("2550.0000") — cast before doing
+        # arithmetic with it.
+        price = float(price_info.get("price") or 0)
+        # Acquiring is a % of price, same as commission — computed here
+        # against the item's current live price purely as a starting number
+        # to render; Цены/Акции recompute it live as the user types a
+        # different price (see computePriceRow in the frontend), the same
+        # way commission already does.
+        acquiring = round(price * acquiring_pct / 100, 2)
 
         items.append({
             "offer_id": offer_id,
@@ -193,7 +228,11 @@ def get_pricing_list(client, cabinet_id: int) -> list:
             "cogs_unit": cost_prices.get(offer_id, 0),
             "commission_pct": sales_pct,
             "logistics_estimate": logistics_estimate,
+            "logistics_trunk": logistics_trunk,
+            "logistics_last_mile": logistics_last_mile,
+            "logistics_first_mile": logistics_first_mile,
             "acquiring": acquiring,
+            "acquiring_pct": acquiring_pct,
             "bonus": bonus,
             "rate_source": rate_source,
             "tax_pct": tax_pct,

@@ -1115,7 +1115,7 @@ async function loadPricing() {
       pricingItems = data.items;
       pricingItems.forEach(p => {
         const price = p.price || p.min_price || 0;
-        p.currentProfit = computePriceRow(price, p.cogs_unit || 0, p.commission_pct, p.logistics_estimate, p.tax_pct).profit;
+        p.currentProfit = computePriceRow(price, p.cogs_unit || 0, p.commission_pct, p.logistics_estimate, p.tax_pct, p.acquiring_pct).profit;
       });
     }
     renderPricing(pricingItems);
@@ -1196,21 +1196,27 @@ function wbPriceCardHtml(p) {
 // shows it as a separate, clearly-labeled line), just not folded into the
 // number that drives pricing decisions. Дашборд/Детализация report a
 // closed period — bonus is already known there — and do include it.
-function computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus) {
-  acquiring = acquiring || 0; bonus = bonus || 0;
+function computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct, acquiringPct, bonus) {
+  // Acquiring is a % of price, same as commission (Ozon charges it as
+  // "цена × тариф банка", not a flat ruble fee) — computed here against
+  // whatever price is currently typed in, same as commission already is,
+  // so it stays correct as the user drags the price around instead of
+  // sticking to whatever price it was estimated at server-side.
+  acquiringPct = acquiringPct || 0; bonus = bonus || 0;
   const commission = price * (commissionPct / 100);
+  const acquiring = price * (acquiringPct / 100);
   const tax = price * ((taxPct || 0) / 100);
   const expensePerUnit = commission + logisticsEstimate + acquiring;
   const profit = price - cogs - expensePerUnit - tax;
   return { commission, logistics: logisticsEstimate, acquiring, bonus, expensePerUnit, tax, profit };
 }
 
-function suggestPrice(cogs, commissionPct, logisticsEstimate, targetMarginPct, taxPct, acquiring) {
-  acquiring = acquiring || 0;
-  // price - cogs - price*commissionPct/100 - logistics - acquiring - price*taxPct/100 = price*targetMarginPct/100
-  const denom = 1 - commissionPct / 100 - (taxPct || 0) / 100 - targetMarginPct / 100;
+function suggestPrice(cogs, commissionPct, logisticsEstimate, targetMarginPct, taxPct, acquiringPct) {
+  acquiringPct = acquiringPct || 0;
+  // price - cogs - price*commissionPct/100 - logistics - price*acquiringPct/100 - price*taxPct/100 = price*targetMarginPct/100
+  const denom = 1 - commissionPct / 100 - acquiringPct / 100 - (taxPct || 0) / 100 - targetMarginPct / 100;
   if (denom <= 0) return null;
-  return (cogs + logisticsEstimate + acquiring) / denom;
+  return (cogs + logisticsEstimate) / denom;
 }
 
 function renderPricing(items) {
@@ -1302,7 +1308,10 @@ function renderPricing(items) {
         if (fresh) {
           p.commission_pct = fresh.commission_pct;
           p.logistics_estimate = fresh.logistics_estimate;
-          p.acquiring = fresh.acquiring;
+          p.logistics_trunk = fresh.logistics_trunk;
+          p.logistics_last_mile = fresh.logistics_last_mile;
+          p.logistics_first_mile = fresh.logistics_first_mile;
+          p.acquiring_pct = fresh.acquiring_pct;
           p.bonus = fresh.bonus;
           p.price = fresh.price;
           p.old_price = fresh.old_price;
@@ -1327,11 +1336,28 @@ function renderPricing(items) {
   });
 }
 
+function logisticsBreakdownHtml(p) {
+  // Ozon's own tariff calculator shows logistics as three separate line
+  // items (Логистика/перевозка, Последняя миля, Обработка отправления) —
+  // only known for the "estimate" rate source (Ozon quotes each
+  // separately per category even for an unsold item); real accrual data
+  // only reports the total delivery cost per posting with no way to split
+  // it, so those items still show one combined "Логистика" line.
+  if (p.logistics_trunk == null) {
+    return `<div class="expense-row"><span>Логистика</span><span class="eb-logistics">—</span></div>`;
+  }
+  return `
+        <div class="expense-row"><span>Логистика</span><span>−${fmtMoney(p.logistics_trunk)}</span></div>
+        <div class="expense-row"><span>Последняя миля</span><span>−${fmtMoney(p.logistics_last_mile)}</span></div>
+        <div class="expense-row"><span>Обработка отправления</span><span>−${fmtMoney(p.logistics_first_mile)}</span></div>`;
+}
+
 function priceCardHtml(p) {
   const staged = pendingPriceChanges[p.offer_id] !== undefined;
   return `<div class="price-card ${staged ? 'staged' : ''}" data-offer="${p.offer_id}"
       data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-tax="${p.tax_pct || 0}"
-      data-acquiring="${p.acquiring || 0}" data-bonus="${p.bonus || 0}" data-old-price="${p.old_price || 0}"
+      data-acquiring-pct="${p.acquiring_pct || 0}" data-bonus="${p.bonus || 0}" data-old-price="${p.old_price || 0}"
+      data-min-price="${p.min_price || 0}"
       data-target-margin="${p.min_margin_pct || 0}" data-live-price="${p.price || 0}">
     <div class="p-name">${p.name}</div>
     <div class="p-offer copy-chip" data-copy="${p.offer_id}">${p.offer_id}</div>
@@ -1358,8 +1384,8 @@ function priceCardHtml(p) {
       </div>
       <div class="expense-detail">
         <div class="expense-row"><span>Комиссия (<span class="eb-commission-pct">${p.commission_pct}</span>%)</span><span class="eb-commission">—</span></div>
-        <div class="expense-row"><span>Логистика</span><span class="eb-logistics">—</span></div>
-        <div class="expense-row"><span>Эквайринг</span><span class="eb-acquiring">—</span></div>
+        ${logisticsBreakdownHtml(p)}
+        <div class="expense-row"><span>Эквайринг (<span class="eb-acquiring-pct">${Number(p.acquiring_pct || 0).toFixed(1)}</span>%)</span><span class="eb-acquiring">—</span></div>
         <div class="expense-row"><span>Налог<span class="eb-tax-pct">${p.tax_pct ? ` (${p.tax_pct}%)` : ''}</span></span><span class="eb-tax">—</span></div>
       </div>
     </div>
@@ -1400,9 +1426,10 @@ function bindPriceCard(card) {
   let commissionPct = parseFloat(card.dataset.commission) || 0;
   let logisticsEstimate = parseFloat(card.dataset.logistics) || 0;
   let taxPct = parseFloat(card.dataset.tax) || 0;
-  let acquiring = parseFloat(card.dataset.acquiring) || 0;
+  let acquiringPct = parseFloat(card.dataset.acquiringPct) || 0;
   let bonus = parseFloat(card.dataset.bonus) || 0;
   let oldPriceOriginal = parseFloat(card.dataset.oldPrice) || 0;
+  let minPriceOriginal = parseFloat(card.dataset.minPrice) || 0;
   const targetMarginPct = parseFloat(card.dataset.targetMargin) || 0;
   let livePrice = parseFloat(card.dataset.livePrice) || 0;
   const priceInput = card.querySelector('.price-input');
@@ -1414,8 +1441,13 @@ function bindPriceCard(card) {
   const cogsOnlyBtn = card.querySelector('.cogs-only-save-btn');
   const ebCommission = card.querySelector('.eb-commission');
   const ebCommissionPct = card.querySelector('.eb-commission-pct');
+  // Absent when the card renders the 3-line Ozon-style logistics breakdown
+  // instead of one combined row — see logisticsBreakdownHtml. Those static
+  // sub-line values don't move with price (they're flat ruble estimates,
+  // not a % of price), so nothing here needs to keep them in sync.
   const ebLogistics = card.querySelector('.eb-logistics');
   const ebAcquiring = card.querySelector('.eb-acquiring');
+  const ebAcquiringPct = card.querySelector('.eb-acquiring-pct');
   const ebTax = card.querySelector('.eb-tax');
   const ebTaxPct = card.querySelector('.eb-tax-pct');
   const ebTotal = card.querySelector('.eb-total');
@@ -1430,14 +1462,15 @@ function bindPriceCard(card) {
   function recalc() {
     const price = parseFloat(priceInput.value) || 0;
     const cogs = parseFloat(cogsInput.value) || 0;
-    const row = computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus);
+    const row = computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct, acquiringPct, bonus);
     if (ebCommissionPct) ebCommissionPct.textContent = commissionPct;
+    if (ebAcquiringPct) ebAcquiringPct.textContent = acquiringPct.toFixed(1);
     if (ebTaxPct) ebTaxPct.textContent = taxPct ? ` (${taxPct}%)` : '';
     const bracketCrossed = priceBracket(livePrice) !== null && priceBracket(price) !== null && priceBracket(livePrice) !== priceBracket(price);
     card._bracketCrossed = bracketCrossed;
     if (bracketWarnText) bracketWarnText.style.display = bracketCrossed ? '' : 'none';
     ebCommission.textContent = '−' + fmtMoney(row.commission);
-    ebLogistics.textContent = '−' + fmtMoney(row.logistics);
+    if (ebLogistics) ebLogistics.textContent = '−' + fmtMoney(row.logistics);
     ebAcquiring.textContent = '−' + fmtMoney(row.acquiring);
     ebTax.textContent = '−' + fmtMoney(row.tax);
     ebTotal.textContent = '−' + fmtMoney(row.commission + row.logistics + row.acquiring + row.tax);
@@ -1462,14 +1495,14 @@ function bindPriceCard(card) {
       // denominator goes non-positive) — happens for real at very high
       // Ozon commission rates. Fall back to a break-even (0% margin)
       // suggestion instead of just showing nothing.
-      let suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, targetMarginPct, taxPct, acquiring);
+      let suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, targetMarginPct, taxPct, acquiringPct);
       let label = targetMarginPct > 0 ? `Для маржи ${targetMarginPct}%` : 'Чтобы выйти в ноль';
       if (!suggested) {
-        suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 0, taxPct, acquiring);
+        suggested = suggestPrice(cogs, commissionPct, logisticsEstimate, 0, taxPct, acquiringPct);
         label = 'Чтобы выйти в ноль';
       }
       if (suggested && suggested > price) {
-        const { profit: newProfit } = computePriceRow(suggested, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus);
+        const { profit: newProfit } = computePriceRow(suggested, cogs, commissionPct, logisticsEstimate, taxPct, acquiringPct, bonus);
         suggestOut.innerHTML = `${label}: цена от <b>${fmtMoney(suggested)}</b> (прибыль ${fmtMoney(newProfit)})`;
       } else if (!suggested) {
         suggestOut.innerHTML = `При комиссии ${commissionPct}%${taxPct ? ' и налоге ' + taxPct + '%' : ''} эту маржу набрать невозможно ни по какой цене`;
@@ -1504,9 +1537,10 @@ function bindPriceCard(card) {
     const stillOldPrice = (fresh.price || 0) !== typedPrice && priceBracket(fresh.price) !== priceBracket(typedPrice);
     commissionPct = fresh.commission_pct;
     logisticsEstimate = fresh.logistics_estimate;
-    acquiring = fresh.acquiring || 0;
+    acquiringPct = fresh.acquiring_pct || 0;
     bonus = fresh.bonus || 0;
     oldPriceOriginal = fresh.old_price || 0;
+    minPriceOriginal = fresh.min_price || 0;
     livePrice = fresh.price || 0;
     taxPct = fresh.tax_pct || 0;
     recalc();
@@ -1535,7 +1569,7 @@ function bindPriceCard(card) {
     const price = parseFloat(priceInput.value) || 0;
     const cogs = parseFloat(cogsInput.value) || 0;
     if (price <= 0) { alert('Укажи цену'); return; }
-    const row = computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct, acquiring, bonus);
+    const row = computePriceRow(price, cogs, commissionPct, logisticsEstimate, taxPct, acquiringPct, bonus);
     if (row.profit < 0 && !confirm(`Прибыль со штуки при этой цене отрицательная (${fmtMoney(row.profit)}). Всё равно поставить цену в очередь на отправку в Ozon?`)) {
       return;
     }
@@ -1552,10 +1586,23 @@ function bindPriceCard(card) {
       // reference shown crossed out), AND for many price ranges requires the
       // resulting discount to be > 5% — setting old_price === price passes
       // the first rule but fails the second ("скидка должна быть больше
-      // 5%"), so when old_price needs raising, give it 10% headroom instead
-      // of matching price exactly.
-      const oldPriceToSend = price > oldPriceOriginal ? Math.ceil(price / 0.9) : oldPriceOriginal;
-      pendingPriceChanges[offerId] = { price, old_price: oldPriceToSend };
+      // 5%"). Always give old_price 10% headroom over price rather than
+      // only raising it when price increased — a small existing gap (old
+      // price only a couple % above the new price) fails the same rule and
+      // was rejected for real (caught live 2026-09-13: Ozon rejected
+      // "бур200" with exactly "скидка должна быть больше 5%").
+      const oldPriceToSend = Math.max(oldPriceOriginal, Math.ceil(price / 0.9));
+      // Ozon separately rejects the WHOLE update if min_price is under 50%
+      // of price ("Укажите минимальную цену не меньше 50% от вашей") — this
+      // app has no UI to manage min_price, so the value on file can be a
+      // stale default well under a newly-raised price (caught live
+      // 2026-09-13: "бур250"/"Пилатус"/"хаски новая1" all rejected on this).
+      // Keep the existing min_price if it's still valid for the new price;
+      // otherwise pin it to price itself — that satisfies the 50% rule for
+      // any price and just disables Ozon's own auto-discount-to-floor for
+      // this item, a feature this app doesn't expose or rely on anyway.
+      const minPriceToSend = minPriceOriginal >= price * 0.5 ? minPriceOriginal : price;
+      pendingPriceChanges[offerId] = { price, old_price: oldPriceToSend, min_price: minPriceToSend };
       card.classList.add('staged');
       updatePushBar();
       recalc();
@@ -1577,7 +1624,7 @@ function updatePushBar() {
 
 async function pushPriceUpdates() {
   const btn = document.getElementById('pushBarBtn');
-  const updates = Object.entries(pendingPriceChanges).map(([offer_id, v]) => ({ offer_id, price: v.price, old_price: v.old_price }));
+  const updates = Object.entries(pendingPriceChanges).map(([offer_id, v]) => ({ offer_id, price: v.price, old_price: v.old_price, min_price: v.min_price }));
   if (!updates.length) return;
   btn.disabled = true; btn.textContent = 'Отправляю…';
   try {
@@ -1889,6 +1936,10 @@ function renderActionDetail(title, data) {
     <div class="date-range" style="align-items:center;gap:8px">
       <button id="inActionSelectAll" class="price-save-btn" style="flex:none;padding:8px 14px">Выбрать все</button>
       <button id="inActionRemoveSelected" class="price-save-btn" style="flex:none;padding:8px 14px" disabled>Убрать выбранные (0)</button>
+      <div style="flex:1;display:flex;align-items:center;gap:6px">
+        <input type="checkbox" id="inActionOnlyLoss" style="width:16px;height:16px">
+        <label style="margin:0" for="inActionOnlyLoss">Только убыточные</label>
+      </div>
     </div>
     <div class="product-list" id="inActionList"></div>
     <div class="card" style="margin-top:4px"><h3>Добавить товар в акцию</h3></div>
@@ -1900,6 +1951,7 @@ function renderActionDetail(title, data) {
   const reload = () => openActionDetail(activeActionId, title);
 
   const inSearchEl = document.getElementById('inActionSearch');
+  const onlyLossEl = document.getElementById('inActionOnlyLoss');
   const selectAllBtn = document.getElementById('inActionSelectAll');
   const removeSelectedBtn = document.getElementById('inActionRemoveSelected');
 
@@ -1911,7 +1963,11 @@ function renderActionDetail(title, data) {
 
   const renderIn = () => {
     const q = inSearchEl.value.trim().toLowerCase();
-    const list = q ? data.in_action.filter(p => (p.name || '').toLowerCase().includes(q) || (p.offer_id || '').toLowerCase().includes(q)) : data.in_action;
+    let list = q ? data.in_action.filter(p => (p.name || '').toLowerCase().includes(q) || (p.offer_id || '').toLowerCase().includes(q)) : data.in_action;
+    // p.profit is null for items we couldn't price (unmatched offer or no
+    // cost price on file) — "null < 0" is false in JS, so those correctly
+    // drop out here too instead of showing as false positives.
+    if (onlyLossEl.checked) list = list.filter(p => p.profit < 0);
     document.getElementById('inActionList').innerHTML = list.slice(0, 200).map(inActionCardHtml).join('') || '<div class="state-msg">Пусто</div>';
     document.querySelectorAll('#inActionList .action-remove-btn').forEach(btn => btn.addEventListener('click', onRemoveClick));
     document.querySelectorAll('#inActionList .in-action-check').forEach(cb => cb.addEventListener('change', updateSelectionCount));
@@ -1920,6 +1976,7 @@ function renderActionDetail(title, data) {
   };
   renderIn();
   inSearchEl.addEventListener('input', renderIn);
+  onlyLossEl.addEventListener('change', renderIn);
 
   selectAllBtn.addEventListener('click', () => {
     const boxes = document.querySelectorAll('#inActionList .in-action-check');
@@ -2004,7 +2061,7 @@ function candidateCardHtml(p) {
   const canEvaluate = hasInfo && hasCogs;
   return `<div class="price-card product-card" data-item="${p.offer_id}" data-pid="${p.product_id}" data-has-info="${canEvaluate ? '1' : '0'}"
       data-cogs="${p.cogs_unit}" data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-tax="${p.tax_pct || 0}"
-      data-acquiring="${p.acquiring || 0}" data-bonus="${p.bonus || 0}">
+      data-acquiring-pct="${p.acquiring_pct || 0}" data-bonus="${p.bonus || 0}">
     <div class="p-name">${p.name}</div>
     <div class="p-offer copy-chip" data-copy="${p.offer_id || p.product_id}">${p.offer_id || p.product_id}</div>
     ${hasInfo && !hasCogs ? `<div class="cogs-row">
@@ -2039,10 +2096,12 @@ function recalcCandProfit(card) {
   const commission = parseFloat(card.dataset.commission) || 0;
   const logistics = parseFloat(card.dataset.logistics) || 0;
   const tax = parseFloat(card.dataset.tax) || 0;
-  const acquiring = parseFloat(card.dataset.acquiring) || 0;
+  const acquiringPct = parseFloat(card.dataset.acquiringPct) || 0;
   // No bonus here — see computePriceRow's comment: deciding whether to add
   // this item to a promo is a forward-looking call, bonus isn't known yet.
-  const profit = price - cogs - (price * (commission / 100) + logistics + acquiring) - price * (tax / 100);
+  // Acquiring is a % of price (same as commission), not a flat amount —
+  // the promo price here can differ a lot from the item's regular price.
+  const profit = price - cogs - (price * (commission / 100) + logistics + price * (acquiringPct / 100)) - price * (tax / 100);
   out.textContent = fmtMoney(profit);
   out.classList.toggle('neg', profit < 0);
   out.classList.toggle('pos', profit >= 0);
@@ -2239,12 +2298,17 @@ function renderSettings() {
   const autoRemove = s.promo_auto_remove !== false;
   const notifyDims = s.notify_dimension_changes !== false;
   const minMargin = s.min_margin_pct !== undefined ? s.min_margin_pct : 0;
+  // Falls back to the same value as "Минимальная маржа" until set explicitly
+  // — matches the backend default in ozon_promo_guard.py, so this input
+  // shows exactly the threshold actually in effect right now, not a
+  // silently-different 0%.
+  const promoMinMargin = s.promo_min_margin_pct !== undefined ? s.promo_min_margin_pct : minMargin;
   const taxPct = s.tax_pct !== undefined ? s.tax_pct : 0;
 
   el.innerHTML = `
     <div class="card">
       <h3>Минимальная маржа</h3>
-      <div class="notice" style="margin-bottom:10px">Товары с маржой ниже этого значения считаются «невыгодными» — на них реагируют мониторинг цен и автовывод из акций.</div>
+      <div class="notice" style="margin-bottom:10px">Товары с маржой ниже этого значения считаются «невыгодными» — на них реагирует мониторинг цен в «Ценах». За акции отвечает отдельная настройка ниже.</div>
       <div class="price-fields">
         <div class="price-field">
           <label>Минимальная маржа, %</label>
@@ -2252,6 +2316,18 @@ function renderSettings() {
         </div>
       </div>
       <div class="price-save-row"><button class="price-save-btn" id="minMarginSave">Сохранить</button></div>
+    </div>
+
+    <div class="card">
+      <h3>Допустимая маржа в акциях</h3>
+      <div class="notice" style="margin-bottom:10px">По акционной цене маржа обычно ниже, чем в обычной продаже — задай отдельный порог, ниже которого автовывод (тумблер ниже) реально убирает товар из акции. Пока не задано отдельно — используется значение «Минимальная маржа» выше.</div>
+      <div class="price-fields">
+        <div class="price-field">
+          <label>Допустимая маржа в акциях, %</label>
+          <input type="number" id="promoMinMarginInput" value="${promoMinMargin}" step="1">
+        </div>
+      </div>
+      <div class="price-save-row"><button class="price-save-btn" id="promoMinMarginSave">Сохранить</button></div>
     </div>
 
     <div class="card">
@@ -2299,6 +2375,17 @@ function renderSettings() {
     if (isNaN(value)) { alert('Укажи число'); return; }
     btn.disabled = true; btn.textContent = 'Сохранение…';
     const ok = await saveSetting({ min_margin_pct: value });
+    btn.disabled = false;
+    btn.textContent = ok ? 'Сохранено ✓' : 'Сохранить';
+    if (ok) setTimeout(() => { btn.textContent = 'Сохранить'; }, 1500);
+  });
+
+  document.getElementById('promoMinMarginSave').addEventListener('click', async () => {
+    const btn = document.getElementById('promoMinMarginSave');
+    const value = parseFloat(document.getElementById('promoMinMarginInput').value);
+    if (isNaN(value)) { alert('Укажи число'); return; }
+    btn.disabled = true; btn.textContent = 'Сохранение…';
+    const ok = await saveSetting({ promo_min_margin_pct: value });
     btn.disabled = false;
     btn.textContent = ok ? 'Сохранено ✓' : 'Сохранить';
     if (ok) setTimeout(() => { btn.textContent = 'Сохранить'; }, 1500);
