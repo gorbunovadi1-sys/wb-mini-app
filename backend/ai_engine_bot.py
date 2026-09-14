@@ -221,8 +221,14 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
 
             pairs_by_payment = {}
             for d in details:
-                aid = d.get("advertId")
-                payment = d.get("paymentType")
+                # WB has (at least) two campaign-detail shapes live at once
+                # (caught live 2026-09-15): older ones with top-level
+                # advertId/paymentType/params|unitedParams|autoParams[].nms,
+                # and a newer "unified auction" shape with id/
+                # settings.payment_type/nm_settings[].nm_id — try both
+                # rather than assume the whole account is on one or the other.
+                aid = d.get("advertId") or d.get("id")
+                payment = d.get("paymentType") or (d.get("settings") or {}).get("payment_type")
                 nm_ids = set()
                 for key in ("params", "unitedParams", "autoParams"):
                     block = d.get(key)
@@ -231,6 +237,9 @@ def build_dispatcher(mini_app_url: str = None) -> Dispatcher:
                             nm_ids.update(p.get("nms") or [])
                     elif isinstance(block, dict):
                         nm_ids.update(block.get("nms") or [])
+                for ns in (d.get("nm_settings") or []):
+                    if ns.get("nm_id"):
+                        nm_ids.add(ns["nm_id"])
                 for nm in list(nm_ids)[:2]:
                     pairs_by_payment.setdefault(payment, []).append({"advert_id": aid, "nm_id": nm})
 
