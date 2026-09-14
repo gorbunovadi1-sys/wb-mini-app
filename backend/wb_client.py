@@ -224,10 +224,12 @@ class WBClient:
         back.
 
         WB's own method description claims this only works for "cpm"
-        campaigns, but the response schema explicitly documents cpc-specific
-        null behavior for views/ctr/cpm (i.e. it expects to be called for cpc
-        campaigns too, just returning fewer fields) — not yet verified live
-        against a real cpc-model campaign as of this writing."""
+        campaigns — that's wrong, or at least stale: verified live
+        2026-09-15 against a real cabinet with both payment types active,
+        cpc campaigns return real per-cluster data too (spend/clicks/cpc/
+        orders/atbs/shks/avg_pos/norm_query all present), just without
+        views/ctr/cpm (which don't apply — cpc doesn't buy impressions as a
+        separate priced unit)."""
         results = []
         for i in range(0, len(items), 100):
             chunk = items[i:i + 100]
