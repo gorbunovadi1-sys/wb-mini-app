@@ -56,6 +56,13 @@ def get_campaign_clusters(client, advert_id: int, days: int = 30) -> list:
     return result
 
 
+# Below this much spend, a cluster's performance doesn't mean anything yet
+# — flagging a 33₽/zero-click cluster as "clean this up" is noise, not a
+# real leak (caught live 2026-09-15, Дарья's own reaction to it). Matches
+# the threshold her own manually-run ad-cleanup routine already uses before
+# judging a cluster at all.
+_MIN_SPEND_FOR_VERDICT = 100  # ₽
+
 # Thresholds relative to THIS campaign's own average cost-per-click, not a
 # fixed ruble amount — a cheap click in one category can be an expensive one
 # in another, so "expensive/cheap" only means anything compared to the rest
@@ -77,13 +84,27 @@ def _assign_verdicts(clusters: list) -> None:
     avg_cpc = (total_spend / total_clicks) if total_clicks else None
 
     for c in clusters:
-        if c["spend"] and not c["clicks"]:
+        if c["spend"] < _MIN_SPEND_FOR_VERDICT:
+            c["verdict"] = "low_data"
+            c["verdict_label"] = f"Мало данных — потрачено всего {c['spend']} ₽"
+        elif not c["clicks"] and not c["orders"]:
+            # Real spend, nobody even clicked — a targeting/bid problem
+            # (the ad isn't earning attention), distinct from the next case
+            # below (it IS earning clicks, just not converting them) —
+            # different diagnosis, both worth showing separately rather than
+            # folding into one generic "clean this up".
             c["verdict"] = "zero_clicks"
-            c["verdict_label"] = "Зачистить — расход без кликов"
+            exposure = f"{c['views']} показов" if c["views"] else "без показов в отчёте"
+            c["verdict_label"] = f"Зачистить — {c['spend']} ₽ расхода, {exposure}, ни одного клика"
+        elif not c["orders"]:
+            # Clicks happened, spend happened, nothing converted — paying
+            # for traffic that doesn't buy, not just for exposure.
+            c["verdict"] = "zero_orders"
+            c["verdict_label"] = f"Зачистить — {c['spend']} ₽ расхода, {c['clicks']} кликов, 0 заказов"
         elif c["cpc"] is not None and avg_cpc:
             if c["cpc"] <= avg_cpc * _SCALE_CPC_RATIO:
                 c["verdict"] = "scale"
-                c["verdict_label"] = f"Масштабировать — клик дешевле среднего ({round(avg_cpc, 2)} ₽) по кампании"
+                c["verdict_label"] = f"Масштабировать — клик дешевле среднего ({round(avg_cpc, 2)} ₽) по кампании, есть заказы"
             elif c["cpc"] >= avg_cpc * _CHECK_CPC_RATIO:
                 c["verdict"] = "check"
                 c["verdict_label"] = f"Проверить — клик дороже среднего ({round(avg_cpc, 2)} ₽) по кампании"

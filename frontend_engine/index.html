@@ -292,14 +292,15 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 /* Кластеры/фразы — вердикты */
 .cluster-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 8px; border-bottom: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 0 8px 8px 0; margin-bottom: 2px; }
 .cluster-row:last-child { border-bottom: none; }
-.cluster-row.v-zero_clicks { border-left-color: var(--negative); }
+.cluster-row.v-zero_clicks, .cluster-row.v-zero_orders { border-left-color: var(--negative); }
 .cluster-row.v-check { border-left-color: var(--warn-text); }
 .cluster-row.v-scale { border-left-color: var(--positive); }
+.cluster-row.v-low_data { border-left-color: var(--border); }
 .verdict-pill { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 6px; letter-spacing: .02em; white-space: nowrap; }
-.verdict-pill.v-zero_clicks { background: color-mix(in srgb, var(--negative) 16%, transparent); color: var(--negative); }
+.verdict-pill.v-zero_clicks, .verdict-pill.v-zero_orders { background: color-mix(in srgb, var(--negative) 16%, transparent); color: var(--negative); }
 .verdict-pill.v-check { background: color-mix(in srgb, var(--warn-text) 16%, transparent); color: var(--warn-text); }
 .verdict-pill.v-scale { background: color-mix(in srgb, var(--positive) 16%, transparent); color: var(--positive); }
-.verdict-pill.v-normal { background: var(--surface-2); color: var(--text-secondary); }
+.verdict-pill.v-normal, .verdict-pill.v-low_data { background: var(--surface-2); color: var(--text-secondary); }
 
 /* Теплокарта артикулы × дни */
 .heatmap-wrap { overflow-x: auto; }
@@ -2601,7 +2602,7 @@ function renderAds(data) {
       box.querySelectorAll('.cluster-filter-chip').forEach(b => b.classList.toggle('active-chip', b === chip));
       const verdict = chip.dataset.verdict;
       const list = box.querySelector('.cluster-list');
-      const filtered = verdict === 'all' ? box._clusters : box._clusters.filter(cl => cl.verdict === verdict);
+      const filtered = verdict === 'all' ? box._clusters : box._clusters.filter(cl => VERDICT_GROUPS[verdict].includes(cl.verdict));
       list.innerHTML = clusterRowsHtml(filtered);
       return;
     }
@@ -2647,19 +2648,24 @@ function adCardHtml(c) {
   </div>`;
 }
 
-const VERDICT_CHIP_LABELS = { zero_clicks: 'Зачистить', check: 'Проверить', scale: 'Масштабировать', normal: 'Норма' };
+const VERDICT_CHIP_LABELS = { clean: 'Зачистить', check: 'Проверить', scale: 'Масштабировать', low_data: 'Мало данных' };
+// "Зачистить" covers two distinct diagnoses shown as one filter bucket:
+// zero_clicks (real spend, nobody even clicked — a targeting/bid problem)
+// and zero_orders (clicks happened, spend happened, nothing converted) —
+// both are "cut this" candidates, just for different reasons, spelled out
+// in each row's own verdict_label.
+const VERDICT_GROUPS = { clean: ['zero_clicks', 'zero_orders'], check: ['check'], scale: ['scale'], low_data: ['low_data'] };
 
 function clusterBoxHtml(clusters) {
   if (!clusters.length) return '<div class="state-msg">Нет данных по фразам за этот период</div>';
-  const counts = { zero_clicks: 0, check: 0, scale: 0, normal: 0 };
-  clusters.forEach(cl => { counts[cl.verdict] = (counts[cl.verdict] || 0) + 1; });
-  const chips = ['all', 'zero_clicks', 'check', 'scale'].map(v => {
-    const label = v === 'all' ? `Все (${clusters.length})` : `${VERDICT_CHIP_LABELS[v]} (${counts[v] || 0})`;
-    if (v !== 'all' && !counts[v]) return '';
+  const chips = ['all', 'clean', 'check', 'scale', 'low_data'].map(v => {
+    const count = v === 'all' ? clusters.length : clusters.filter(cl => VERDICT_GROUPS[v].includes(cl.verdict)).length;
+    if (v !== 'all' && !count) return '';
+    const label = v === 'all' ? `Все (${clusters.length})` : `${VERDICT_CHIP_LABELS[v]} (${count})`;
     return `<button type="button" class="cluster-filter-chip ${v === 'all' ? 'active-chip' : ''}" data-verdict="${v}">${label}</button>`;
   }).join('');
   return `
-    <div class="quick-chips" style="margin-bottom:2px">${chips}</div>
+    <div class="quick-chips" style="margin-bottom:2px;flex-wrap:wrap">${chips}</div>
     <div class="cluster-list">${clusterRowsHtml(clusters)}</div>`;
 }
 
@@ -2668,11 +2674,11 @@ function clusterRowsHtml(clusters) {
   return clusters.map(cl => `
     <div class="cluster-row v-${cl.verdict}">
       <span style="flex:1 1 auto;min-width:0">
-        <span style="color:var(--text)">${cl.norm_query}</span>${cl.views ? '' : ' <span style="color:var(--text-secondary)">(cpc)</span>'}
+        <span style="color:var(--text)">${cl.norm_query}</span>
         <div style="margin-top:4px"><span class="verdict-pill v-${cl.verdict}">${cl.verdict_label}</span></div>
       </span>
       <span style="flex:0 0 auto;text-align:right;display:flex;align-items:center;gap:6px">
-        <span style="font-size:11px;color:var(--text-secondary);font-family:var(--font-mono)">−${fmtMoney(cl.spend)} ₽${cl.clicks ? ` · ${fmtNum(cl.clicks)} кл.${cl.ctr !== null ? ` · CTR ${cl.ctr}%` : ''} · CPC ${fmtMoney(cl.cpc || 0)}` : ''}${cl.orders ? ` · ${cl.orders} зак.` : ''}</span>
+        <span style="font-size:11px;color:var(--text-secondary);font-family:var(--font-mono)">−${fmtMoney(cl.spend)} ₽${cl.views ? ` · ${fmtNum(cl.views)} показ.` : ''}${cl.clicks ? ` · ${fmtNum(cl.clicks)} кл.${cl.ctr !== null ? ` · CTR ${cl.ctr}%` : ''} · CPC ${fmtMoney(cl.cpc || 0)}` : ''}${cl.orders ? ` · ${cl.orders} зак.` : ''}</span>
         <button class="cluster-exclude-btn" type="button" data-norm-query="${cl.norm_query.replace(/"/g, '&quot;')}" title="Исключить эту фразу/кластер из кампании" style="flex:none;padding:2px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--negative);cursor:pointer">✕</button>
       </span>
     </div>`).join('');
