@@ -607,6 +607,25 @@ def get_cabinet_ad_clusters(
     return {"clusters": wb_ads.get_campaign_clusters(client, advert_id, days=days)}
 
 
+@app.post("/api/cabinets/{cabinet_id}/ads/{advert_id}/exclude-phrase")
+def exclude_cabinet_ad_phrase(
+    cabinet_id: int,
+    advert_id: int,
+    body: dict,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+):
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
+    if cabinet["marketplace"] != "wb":
+        raise HTTPException(status_code=400, detail="Доступно только для WB")
+    norm_query = (body or {}).get("norm_query")
+    if not norm_query:
+        raise HTTPException(status_code=400, detail="norm_query is required")
+    client = _build_client(cabinet)
+    return wb_ads.exclude_cluster_from_campaign(client, advert_id, norm_query)
+
+
 @app.get("/api/cabinets/{cabinet_id}/ozon/dimensions")
 def get_cabinet_ozon_dimensions(
     cabinet_id: int,

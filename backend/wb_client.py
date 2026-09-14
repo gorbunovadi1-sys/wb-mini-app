@@ -269,6 +269,40 @@ class WBClient:
                 time.sleep(6)  # stay under the 10 req/min cap even across many chunks
         return results
 
+    def get_minus_phrases(self, items):
+        """POST /adv/v0/normquery/get-minus — current minus-phrase list per
+        (advert_id, nm_id) pair, batched 100/call. Always call this and
+        merge before set_minus_phrases — that call REPLACES the whole list
+        (WB's own docs warn an empty array deletes every minus-phrase on
+        file), so the existing list has to be read first, never assumed."""
+        results = []
+        for i in range(0, len(items), 100):
+            chunk = items[i:i + 100]
+            r = requests.post(f"{ADVERT_BASE}/adv/v0/normquery/get-minus", headers=self.headers, json={"items": chunk}, timeout=30)
+            r.raise_for_status()
+            results.extend(r.json().get("items", []))
+            if i + 100 < len(items):
+                time.sleep(1)
+        return results
+
+    def set_minus_phrases(self, advert_id, nm_id, norm_queries):
+        """POST /adv/v0/normquery/set-minus — REPLACES the entire minus-
+        phrase list for one (advert_id, nm_id) pair with `norm_queries`.
+        Sending [] deletes every minus-phrase WB has on file for it — always
+        pass the full intended list (existing ones + whatever's being
+        added/removed), never just a delta. See get_minus_phrases."""
+        payload = {"advert_id": advert_id, "nm_id": nm_id, "norm_queries": norm_queries}
+        r = None
+        for attempt in range(4):
+            r = requests.post(f"{ADVERT_BASE}/adv/v0/normquery/set-minus", headers=self.headers, json=payload, timeout=30)
+            if r.status_code != 429:
+                break
+            retry_after = int(r.headers.get("Retry-After", 3))
+            log.warning(f"429 from normquery set-minus, retrying in {retry_after}s (attempt {attempt + 1})")
+            time.sleep(retry_after)
+        r.raise_for_status()
+        return r.json()
+
     def get_campaign_details(self, advert_ids):
         results = []
         for i in range(0, len(advert_ids), 50):

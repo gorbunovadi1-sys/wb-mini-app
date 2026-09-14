@@ -2421,6 +2421,34 @@ function renderAds(data) {
   // doesn't leave room to fetch it for every campaign up front on an
   // account with dozens of them.
   document.getElementById('adsList').addEventListener('click', async (e) => {
+    const excludeBtn = e.target.closest('.cluster-exclude-btn');
+    if (excludeBtn) {
+      const row = excludeBtn.closest('.expense-row');
+      const card = excludeBtn.closest('.price-card');
+      const advertId = card.dataset.advertId;
+      const normQuery = excludeBtn.dataset.normQuery;
+      if (!confirm(`Исключить «${normQuery}» из показа по этой кампании? Применится ко всем товарам кампании.`)) return;
+      excludeBtn.disabled = true;
+      excludeBtn.textContent = '…';
+      try {
+        const resp = await apiFetch(`/api/cabinets/${activeCabinetId}/ads/${advertId}/exclude-phrase`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ norm_query: normQuery }),
+        });
+        if (resp.failed && resp.failed.length) {
+          alert(`Частично не удалось: для ${resp.failed.length} товар(ов) кампании не применилось (обновлено ${resp.updated.length}).`);
+        }
+        row.style.opacity = '0.5';
+        row.innerHTML = `<span>«${normQuery}» — исключено ✓</span>`;
+      } catch (err) {
+        alert('Не удалось исключить: ' + err.message);
+        excludeBtn.disabled = false;
+        excludeBtn.textContent = '✕';
+      }
+      return;
+    }
+
     const btn = e.target.closest('.cluster-toggle-btn');
     if (!btn) return;
     const card = btn.closest('.price-card');
@@ -2461,12 +2489,25 @@ function adCardHtml(c) {
   </div>`;
 }
 
+function verdictColor(verdict) {
+  if (verdict === 'zero_clicks') return 'var(--negative)';
+  if (verdict === 'check') return 'var(--warn-text)';
+  if (verdict === 'scale') return 'var(--positive)';
+  return 'var(--text-secondary)';
+}
+
 function clusterRowsHtml(clusters) {
   if (!clusters.length) return '<div class="state-msg">Нет данных по фразам за этот период</div>';
   return clusters.map(cl => `
-    <div class="expense-row">
-      <span>${cl.norm_query}${cl.views ? '' : ' <span style="color:var(--text-secondary)">(cpc)</span>'}</span>
-      <span>−${fmtMoney(cl.spend)} ₽${cl.clicks ? ` · ${fmtNum(cl.clicks)} кл.${cl.ctr !== null ? ` · CTR ${cl.ctr}%` : ''} · CPC ${fmtMoney(cl.cpc || 0)}` : ''}${cl.orders ? ` · ${cl.orders} зак.` : ''}</span>
+    <div class="expense-row" style="align-items:flex-start;gap:8px">
+      <span style="flex:1 1 auto;min-width:0">
+        <span style="color:var(--text)">${cl.norm_query}</span>${cl.views ? '' : ' <span style="color:var(--text-secondary)">(cpc)</span>'}
+        <div style="font-size:11px;color:${verdictColor(cl.verdict)};margin-top:2px">${cl.verdict_label}</div>
+      </span>
+      <span style="flex:0 0 auto;text-align:right;display:flex;align-items:center;gap:6px">
+        <span>−${fmtMoney(cl.spend)} ₽${cl.clicks ? ` · ${fmtNum(cl.clicks)} кл.${cl.ctr !== null ? ` · CTR ${cl.ctr}%` : ''} · CPC ${fmtMoney(cl.cpc || 0)}` : ''}${cl.orders ? ` · ${cl.orders} зак.` : ''}</span>
+        <button class="cluster-exclude-btn" type="button" data-norm-query="${cl.norm_query.replace(/"/g, '&quot;')}" title="Исключить эту фразу/кластер из кампании" style="flex:none;padding:2px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--negative);cursor:pointer">✕</button>
+      </span>
     </div>`).join('');
 }
 

@@ -52,7 +52,85 @@ def get_campaign_clusters(client, advert_id: int, days: int = 30) -> list:
         c["ctr"] = round(c["clicks"] / c["views"] * 100, 2) if c["views"] else None
         c["cpc"] = round(c["spend"] / c["clicks"], 2) if c["clicks"] else None
     result.sort(key=lambda x: -x["spend"])
+    _assign_verdicts(result)
     return result
+
+
+# Thresholds relative to THIS campaign's own average cost-per-click, not a
+# fixed ruble amount — a cheap click in one category can be an expensive one
+# in another, so "expensive/cheap" only means anything compared to the rest
+# of the same campaign. Matches the reasoning a manually-built weekly ad
+# report already uses for its own "Зачистить/Проверить/Масштабировать"
+# verdict column.
+_SCALE_CPC_RATIO = 0.7  # cpc at or below 70% of campaign average — cheap traffic
+_CHECK_CPC_RATIO = 1.5  # cpc at or above 150% of campaign average — worth a look
+
+
+def _assign_verdicts(clusters: list) -> None:
+    """Mutates each cluster dict in place, adding `verdict` (machine key)
+    and `verdict_label` (what to actually do) — a recommendation for
+    whether to exclude, watch, or scale a search cluster's spend, mirroring
+    the verdict column Дарья's manually-built weekly report already shows."""
+    spent_with_clicks = [c for c in clusters if c["clicks"]]
+    total_spend = sum(c["spend"] for c in spent_with_clicks)
+    total_clicks = sum(c["clicks"] for c in spent_with_clicks)
+    avg_cpc = (total_spend / total_clicks) if total_clicks else None
+
+    for c in clusters:
+        if c["spend"] and not c["clicks"]:
+            c["verdict"] = "zero_clicks"
+            c["verdict_label"] = "Зачистить — расход без кликов"
+        elif c["cpc"] is not None and avg_cpc:
+            if c["cpc"] <= avg_cpc * _SCALE_CPC_RATIO:
+                c["verdict"] = "scale"
+                c["verdict_label"] = f"Масштабировать — клик дешевле среднего ({round(avg_cpc, 2)} ₽) по кампании"
+            elif c["cpc"] >= avg_cpc * _CHECK_CPC_RATIO:
+                c["verdict"] = "check"
+                c["verdict_label"] = f"Проверить — клик дороже среднего ({round(avg_cpc, 2)} ₽) по кампании"
+            else:
+                c["verdict"] = "normal"
+                c["verdict_label"] = "Норма"
+        else:
+            c["verdict"] = "normal"
+            c["verdict_label"] = "Норма"
+
+
+def exclude_cluster_from_campaign(client, advert_id: int, norm_query: str) -> dict:
+    """Adds `norm_query` (a search cluster/phrase, exactly as shown by
+    get_campaign_clusters) to the minus-phrase list for every item this
+    campaign promotes. WB scopes minus-phrases per (advert_id, nm_id), not
+    per campaign as a whole (see WBClient.set_minus_phrases) — applying it
+    to every nm_id the campaign has is what actually excludes the cluster
+    campaign-wide, matching what "Кластеры и фразы" shows (spend already
+    summed across all the campaign's items).
+
+    Always reads each item's EXISTING minus-phrase list first and merges
+    `norm_query` into it — set_minus_phrases replaces the whole list, so
+    skipping this step would silently wipe out any minus-phrases already
+    set (via this app or WB's own seller cabinet)."""
+    details = client.get_campaign_details([advert_id])
+    if not details:
+        return {"updated": [], "failed": [], "reason": "campaign not found"}
+    nm_ids = nm_ids_from_campaign_detail(details[0])
+    if not nm_ids:
+        return {"updated": [], "failed": [], "reason": "no items on this campaign"}
+
+    items = [{"advert_id": advert_id, "nm_id": nm} for nm in nm_ids]
+    current = client.get_minus_phrases(items)
+    current_by_nm = {c.get("nm_id"): (c.get("norm_queries") or []) for c in current}
+
+    updated, failed = [], []
+    for nm in nm_ids:
+        existing = current_by_nm.get(nm, [])
+        if norm_query in existing:
+            updated.append(nm)
+            continue
+        try:
+            client.set_minus_phrases(advert_id, nm, existing + [norm_query])
+            updated.append(nm)
+        except Exception:
+            failed.append(nm)
+    return {"updated": updated, "failed": failed}
 
 
 def get_campaigns_summary(client, days: int = 30) -> dict:
