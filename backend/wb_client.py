@@ -207,6 +207,45 @@ class WBClient:
         r.raise_for_status()
         return r.json()
 
+    def get_normquery_stats(self, items, date_from, date_to):
+        """POST /adv/v0/normquery/stats — search-cluster-level stats per
+        (advert_id, nm_id) pair: normalized search phrase/cluster
+        (`norm_query`), clicks, orders, add-to-basket, spend, cpc/cpm, avg
+        search position, units ordered. This is the ad-spend breakdown by
+        search phrase/cluster that a downloaded "Еженедельный детализированный
+        отчёт"-style weekly dashboard shows — not previously pulled by this
+        app anywhere (wb_ads.py only ever aggregated at the campaign level).
+
+        `items`: [{"advert_id": int, "nm_id": int}, ...] — batched 100/call,
+        WB's own per-request cap. Rate limit is tight (10 req/min with a
+        personal token, per WB's docs) — a fixed sleep between chunks here
+        rather than reacting only after a 429, since a burst of chunk calls
+        can otherwise blow through the limit before the first 429 even comes
+        back.
+
+        WB's own method description claims this only works for "cpm"
+        campaigns, but the response schema explicitly documents cpc-specific
+        null behavior for views/ctr/cpm (i.e. it expects to be called for cpc
+        campaigns too, just returning fewer fields) — not yet verified live
+        against a real cpc-model campaign as of this writing."""
+        results = []
+        for i in range(0, len(items), 100):
+            chunk = items[i:i + 100]
+            payload = {"from": date_from, "to": date_to, "items": chunk}
+            r = None
+            for attempt in range(4):
+                r = requests.post(f"{ADVERT_BASE}/adv/v0/normquery/stats", headers=self.headers, json=payload, timeout=30)
+                if r.status_code != 429:
+                    break
+                retry_after = int(r.headers.get("Retry-After", 6))
+                log.warning(f"429 from normquery stats, retrying in {retry_after}s (attempt {attempt + 1})")
+                time.sleep(retry_after)
+            r.raise_for_status()
+            results.extend(r.json().get("stats", []))
+            if i + 100 < len(items):
+                time.sleep(6)  # stay under the 10 req/min cap even across many chunks
+        return results
+
     def get_campaign_details(self, advert_ids):
         results = []
         for i in range(0, len(advert_ids), 50):
