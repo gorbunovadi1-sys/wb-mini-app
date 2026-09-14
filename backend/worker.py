@@ -65,10 +65,24 @@ async def main():
 
     # Same immediate first-pass kickoff `web` used to do at its own startup —
     # no reason to wait up to 3h for the first real data after a deploy.
-    await asyncio.gather(
-        _refresh_wb_caches(skip_if_fresh=True),
-        _refresh_ozon_caches(skip_if_fresh=True),
-    )
+    #
+    # Sequential, NOT asyncio.gather — found live (2026-09-14): the worker
+    # was stuck in a tight crash-restart loop for ~24h straight after every
+    # deploy, dying every ~30s during this exact startup kickoff, always
+    # right around cabinet 8 (26k+ postings, see project_large_cabinet_sync_
+    # stuck in session memory) — no Python traceback ever shown for the
+    # actual death (every real exception here is already caught and logged
+    # inside _refresh_wb_caches/_refresh_ozon_caches), consistent with an
+    # OOM kill: running WB's 52-report fetch and Ozon's largest cabinet's
+    # fetch fully concurrently, right at cold start, is exactly the peak
+    # memory moment. Because this crash-looped before the scheduler's
+    # 10-minute promo-check job ever got a single chance to fire, it also
+    # silently broke promo auto-removal for every cabinet, not just this
+    # one — not a logic bug in ozon_promo_guard, the whole process was never
+    # up long enough to run it once. Sequential halves peak memory here at
+    # the cost of a slightly slower first-pass refresh after each deploy.
+    await _refresh_wb_caches(skip_if_fresh=True)
+    await _refresh_ozon_caches(skip_if_fresh=True)
     log.info("Initial WB+Ozon sales cache refresh done")
 
     await asyncio.Event().wait()  # run forever — the scheduler does its work on its own tasks
