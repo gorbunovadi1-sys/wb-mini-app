@@ -132,6 +132,57 @@ def _estimate_rate(commissions: dict, fulfillment: str):
     return sales_pct, trunk, last_mile, first_mile
 
 
+def _promo_info_by_product_id(client) -> dict:
+    """product_id -> {action_id, action_title, action_price} for every
+    product currently sitting in an Ozon promotion this cabinet
+    participates in — powers Цены' "товар в акции" highlight/badge/filter,
+    so editing the regular price there doesn't happen in ignorance of a
+    different, promo-specific price already live for the same item. A
+    product in more than one promo at once (rare) just keeps whichever is
+    found first — good enough as a "heads up, check Акции" signal, not
+    meant to be an exhaustive multi-promo view.
+
+    Same order of extra API traffic Акции's own list already makes
+    (get_actions, then get_action_products per action that actually has
+    participants) — not a new category of load on Цены, just done there
+    too now."""
+    try:
+        actions = client.get_actions()
+    except Exception:
+        return {}
+    relevant = [a for a in actions if a.get("is_participating") or a.get("participating_products_count", 0) > 0]
+    result = {}
+    for action in relevant:
+        try:
+            products = client.get_action_products(action["id"])
+        except Exception:
+            continue
+        for p in products:
+            pid = p.get("id")
+            if pid is None or pid in result:
+                continue
+            result[pid] = {
+                "action_id": action["id"],
+                "action_title": action.get("title", str(action["id"])),
+                "action_price": p.get("action_price") or 0,
+            }
+    return result
+
+
+def _promo_profit(price, cogs_unit, commission_pct, logistics_estimate, tax_pct, acquiring_pct):
+    # Same formula as ozon_promotions_detail._profit/ozon_promo_guard's —
+    # duplicated locally rather than imported, since ozon_promotions_detail
+    # already imports THIS module (avoids a circular import) and it's three
+    # lines. No "bonus" here either, same reasoning as those: this is a
+    # forward-looking "is this promo price still worth it" signal, and
+    # bonus is only known after a sale actually happens.
+    if not price:
+        return None
+    expense = price * (commission_pct / 100) + logistics_estimate + price * ((acquiring_pct or 0) / 100)
+    tax = price * (tax_pct / 100)
+    return round(price - cogs_unit - expense - tax, 2)
+
+
 def get_pricing_list(client, cabinet_id: int) -> list:
     """Merges live prices + per-product commission/logistics rate (real,
     where recent sales history is cached — see _real_rates_by_offer; a
@@ -152,6 +203,7 @@ def get_pricing_list(client, cabinet_id: int) -> list:
     # the hardcoded 15%/0% break-even suggestion.
     min_margin_pct = settings.get("min_margin_pct", 0)
     real_rates, shop_avg_acquiring_pct = _real_rates_by_offer(cabinet_id)
+    promo_by_pid = _promo_info_by_product_id(client)
 
     items = []
     for p in prices:
@@ -218,6 +270,20 @@ def get_pricing_list(client, cabinet_id: int) -> list:
         # way commission already does.
         acquiring = round(price * acquiring_pct / 100, 2)
 
+        promo = promo_by_pid.get(p.get("product_id"))
+        promo_info = None
+        if promo and promo["action_price"]:
+            promo_profit = _promo_profit(
+                promo["action_price"], cost_prices.get(offer_id, 0), sales_pct, logistics_estimate, tax_pct, acquiring_pct,
+            )
+            promo_info = {
+                "action_id": promo["action_id"],
+                "action_title": promo["action_title"],
+                "price": promo["action_price"],
+                "profit": promo_profit,
+                "margin_percent": round(promo_profit / promo["action_price"] * 100, 2) if promo_profit is not None else None,
+            }
+
         items.append({
             "offer_id": offer_id,
             "product_id": p.get("product_id"),
@@ -239,6 +305,7 @@ def get_pricing_list(client, cabinet_id: int) -> list:
             "min_margin_pct": min_margin_pct,
             "fbo_stock": stock["fbo"],
             "fbs_stock": stock["fbs"],
+            "promo": promo_info,
         })
     items.sort(key=lambda x: x["name"] or "")
     return items

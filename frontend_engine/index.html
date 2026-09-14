@@ -248,6 +248,8 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 /* ---- Pricing tab ---- */
 .price-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px; }
 .price-card.staged { border-color: var(--accent); }
+.price-card.in-promo { border-color: var(--warn-text); background: linear-gradient(0deg, var(--warn-bg), var(--warn-bg)), var(--surface); }
+.promo-note { margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: var(--warn-bg); color: var(--warn-text); font-size: 12.5px; font-weight: 600; line-height: 1.4; }
 .price-card .p-name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
 .price-card .p-offer { font-size: 10.5px; color: var(--text-secondary); font-family: var(--font-mono); margin-bottom: 10px; }
 .price-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px; }
@@ -1296,6 +1298,10 @@ function renderPricing(items) {
           <option value="without">Без остатка</option>
         </select>
       </div>
+      <div class="field" style="flex:1;flex-direction:row;align-items:center;gap:6px;padding-bottom:2px">
+        <input type="checkbox" id="pricingOnlyPromo" style="width:16px;height:16px">
+        <label style="margin:0" for="pricingOnlyPromo">Товар в акции</label>
+      </div>
     </div>
     <div class="product-list" id="pricingList"></div>
   `;
@@ -1303,6 +1309,7 @@ function renderPricing(items) {
   const sortEl = document.getElementById('pricingSort');
   const onlyNegEl = document.getElementById('pricingOnlyNeg');
   const stockFilterEl = document.getElementById('pricingStockFilter');
+  const onlyPromoEl = document.getElementById('pricingOnlyPromo');
   const refreshBtn = document.getElementById('pricingRefreshCommissions');
   const listEl = document.getElementById('pricingList');
 
@@ -1321,6 +1328,7 @@ function renderPricing(items) {
         return stockFilterEl.value === 'with' ? hasStock : !hasStock;
       });
     }
+    if (onlyPromoEl.checked) list = list.filter(i => !!i.promo);
     if (sortEl.value === 'asc') list = [...list].sort((a, b) => a.currentProfit - b.currentProfit);
     else if (sortEl.value === 'desc') list = [...list].sort((a, b) => b.currentProfit - a.currentProfit);
 
@@ -1333,6 +1341,7 @@ function renderPricing(items) {
   sortEl.addEventListener('change', renderList);
   onlyNegEl.addEventListener('change', renderList);
   stockFilterEl.addEventListener('change', renderList);
+  onlyPromoEl.addEventListener('change', renderList);
   // Price/cost inputs fire native 'input' events, which bubble — one
   // delegated listener on the list catches every card's edits instead of
   // wiring a separate listener per card.
@@ -1365,6 +1374,7 @@ function renderPricing(items) {
           p.price = fresh.price;
           p.old_price = fresh.old_price;
           p.rate_source = fresh.rate_source;
+          p.promo = fresh.promo;
         }
       });
       let anyStillOld = false;
@@ -1401,9 +1411,20 @@ function logisticsBreakdownHtml(p) {
         <div class="expense-row"><span>Обработка отправления</span><span>−${fmtMoney(p.logistics_first_mile)}</span></div>`;
 }
 
+function promoNoteHtml(p) {
+  // Bottom-of-card marker for a product currently sitting in an Ozon
+  // promotion at the same time it's shown here — the regular price on this
+  // card is NOT what a buyer using the promo actually pays, so this is
+  // surfaced explicitly rather than left for Дарья to discover only by
+  // separately checking Акции.
+  if (!p.promo) return '';
+  const marginKnown = p.promo.margin_percent !== null && p.promo.margin_percent !== undefined;
+  return `<div class="promo-note">🏷 В акции «${p.promo.action_title}»: цена ${fmtMoney(p.promo.price)} ₽${marginKnown ? ` · маржа по акции ${p.promo.margin_percent.toFixed(1)}%` : ' · маржа по акции неизвестна (нет себестоимости)'}</div>`;
+}
+
 function priceCardHtml(p) {
   const staged = pendingPriceChanges[p.offer_id] !== undefined;
-  return `<div class="price-card ${staged ? 'staged' : ''}" data-offer="${p.offer_id}"
+  return `<div class="price-card ${staged ? 'staged' : ''} ${p.promo ? 'in-promo' : ''}" data-offer="${p.offer_id}"
       data-commission="${p.commission_pct}" data-logistics="${p.logistics_estimate}" data-tax="${p.tax_pct || 0}"
       data-acquiring-pct="${p.acquiring_pct || 0}" data-bonus="${p.bonus || 0}" data-old-price="${p.old_price || 0}"
       data-min-price="${p.min_price || 0}"
@@ -1451,6 +1472,7 @@ function priceCardHtml(p) {
       <button class="cogs-only-save-btn" title="Сохранить только себестоимость, без отправки цены в Ozon">Сохранить себестоимость</button>
       <button class="price-save-btn">Сохранить</button>
     </div>
+    ${promoNoteHtml(p)}
   </div>`;
 }
 
@@ -1980,8 +2002,8 @@ function renderActionDetail(title, data) {
   el.innerHTML = `
     <button class="back-btn" id="actionsBackBtn">← Все акции</button>
     <div class="card"><h3>${title}</h3></div>
+    <input class="search-box" id="actionDetailSearch" placeholder="Поиск по всем товарам акции — и участвующим, и доступным…">
     <div class="notice" style="margin-bottom:2px">В акции: ${data.in_action.length} товар(ов)</div>
-    <input class="search-box" id="inActionSearch" placeholder="Поиск в товарах акции…">
     <div class="date-range" style="align-items:center;gap:8px">
       <button id="inActionSelectAll" class="price-save-btn" style="flex:none;padding:8px 14px">Выбрать все</button>
       <button id="inActionRemoveSelected" class="price-save-btn" style="flex:none;padding:8px 14px" disabled>Убрать выбранные (0)</button>
@@ -1991,15 +2013,18 @@ function renderActionDetail(title, data) {
       </div>
     </div>
     <div class="product-list" id="inActionList"></div>
-    <div class="card" style="margin-top:4px"><h3>Добавить товар в акцию</h3></div>
-    <input class="search-box" id="candidatesSearch" placeholder="Поиск среди доступных товаров… (${data.candidates.length})">
+    <div class="card" style="margin-top:4px"><h3>Добавить товар в акцию (${data.candidates.length} доступно)</h3></div>
     <div class="product-list" id="candidatesList"></div>
   `;
   document.getElementById('actionsBackBtn').addEventListener('click', renderActionsList);
 
   const reload = () => openActionDetail(activeActionId, title);
 
-  const inSearchEl = document.getElementById('inActionSearch');
+  // One shared search box drives both lists (below) — previously each list
+  // had its own box, so searching for a product that wasn't already in the
+  // promotion silently found nothing even though it was sitting right
+  // there in "Добавить товар в акцию".
+  const searchEl = document.getElementById('actionDetailSearch');
   const onlyLossEl = document.getElementById('inActionOnlyLoss');
   const selectAllBtn = document.getElementById('inActionSelectAll');
   const removeSelectedBtn = document.getElementById('inActionRemoveSelected');
@@ -2011,7 +2036,7 @@ function renderActionDetail(title, data) {
   };
 
   const renderIn = () => {
-    const q = inSearchEl.value.trim().toLowerCase();
+    const q = searchEl.value.trim().toLowerCase();
     let list = q ? data.in_action.filter(p => (p.name || '').toLowerCase().includes(q) || (p.offer_id || '').toLowerCase().includes(q)) : data.in_action;
     // p.profit is null for items we couldn't price (unmatched offer or no
     // cost price on file) — "null < 0" is false in JS, so those correctly
@@ -2024,7 +2049,7 @@ function renderActionDetail(title, data) {
     updateSelectionCount();
   };
   renderIn();
-  inSearchEl.addEventListener('input', renderIn);
+  searchEl.addEventListener('input', () => { renderIn(); renderCand(); });
   onlyLossEl.addEventListener('change', renderIn);
 
   selectAllBtn.addEventListener('click', () => {
@@ -2054,9 +2079,8 @@ function renderActionDetail(title, data) {
     }
   });
 
-  const candSearchEl = document.getElementById('candidatesSearch');
   const renderCand = () => {
-    const q = candSearchEl.value.trim().toLowerCase();
+    const q = searchEl.value.trim().toLowerCase();
     const list = q
       ? data.candidates.filter(p => (p.name || '').toLowerCase().includes(q) || (p.offer_id || '').toLowerCase().includes(q))
       : data.candidates.slice(0, 50);
@@ -2067,7 +2091,6 @@ function renderActionDetail(title, data) {
     bindCogsHandlers(document.getElementById('candidatesList'), reload);
   };
   renderCand();
-  candSearchEl.addEventListener('input', renderCand);
 }
 
 function inActionCardHtml(p) {
