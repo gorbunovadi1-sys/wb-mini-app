@@ -94,6 +94,10 @@ def build_margin_summary(
     })
     prev_totals = _empty_bucket()
     daily = collections.defaultdict(lambda: {"revenue": 0.0, "forpay": 0.0, "qty": 0})
+    # Per-product-per-day revenue — powers the "Артикулы × дни" heatmap on
+    # Аналитика. Cheap to collect here since this loop already visits every
+    # row once; nothing else in this module needed the cross before.
+    daily_by_nm = collections.defaultdict(lambda: collections.defaultdict(float))
 
     for row in all_rows:
         row_date_str = _row_date(row)
@@ -114,6 +118,8 @@ def build_margin_summary(
                 p["title"] = row.get("title") or p["title"]
                 p["vendor_code"] = row.get("vendorCode") or p["vendor_code"]
                 p["brand"] = row.get("brandName") or p["brand"]
+                if row.get("docTypeName") == "Продажа":
+                    daily_by_nm[nm][row_date_str] += _num(row, "retailAmount")
             d = daily[row_date_str]
             d["forpay"] += _num(row, "forPay")
             if row.get("docTypeName") == "Продажа":
@@ -219,4 +225,8 @@ def build_margin_summary(
         },
         "daily": daily_series,
         "products": products,
+        # {nm_id (as string — JSON object keys can't be ints): {date: revenue}}
+        # — powers the "Артикулы × дни" heatmap on Аналитика. Only products
+        # with at least one sale this period have an entry.
+        "daily_by_nm": {str(nm): {d: round(v, 2) for d, v in by_date.items()} for nm, by_date in daily_by_nm.items()},
     }

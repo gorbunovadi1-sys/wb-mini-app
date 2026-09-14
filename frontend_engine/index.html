@@ -266,6 +266,47 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
 .expense-toggle { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-secondary); cursor: pointer; user-select: none; }
 .expense-chevron { transition: transform .15s; }
 .expense-breakdown.expanded .expense-chevron { transform: rotate(180deg); }
+
+/* ABC-анализ */
+.abc-pill { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; padding: 0 5px; border-radius: 7px; font-size: 12px; font-weight: 700; flex: none; }
+.abc-pill.cls-A { background: color-mix(in srgb, var(--positive) 20%, transparent); color: var(--positive); }
+.abc-pill.cls-B { background: color-mix(in srgb, var(--accent-2) 20%, transparent); color: var(--accent-2); }
+.abc-pill.cls-C { background: var(--surface-2); color: var(--text-secondary); }
+.abc-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.abc-row:last-child { border-bottom: none; }
+.abc-row .abc-name { flex: 1; min-width: 0; }
+.abc-row .abc-name .nm { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+.abc-row .abc-bar { height: 3px; border-radius: 2px; background: var(--surface-2); margin-top: 5px; overflow: hidden; }
+.abc-row .abc-bar i { display: block; height: 100%; background: var(--accent); }
+.abc-row .abc-stats { flex: none; text-align: right; font-size: 11px; color: var(--text-secondary); white-space: nowrap; font-family: var(--font-mono); }
+
+/* Находки */
+.finding-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin-top: 10px; }
+.finding-card { background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 13px 15px; display: flex; flex-direction: column; gap: 5px; }
+.finding-card .f-tag { font-size: 10px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; color: var(--accent); }
+.finding-card.alert .f-tag { color: var(--negative); }
+.finding-card.good .f-tag { color: var(--positive); }
+.finding-card .f-fig { font-size: 18px; font-weight: 700; color: var(--text); }
+.finding-card p { font-size: 12px; color: var(--text-secondary); line-height: 1.45; margin: 0; }
+
+/* Кластеры/фразы — вердикты */
+.cluster-row { display: flex; align-items: flex-start; gap: 10px; padding: 10px 8px; border-bottom: 1px solid var(--border); border-left: 3px solid var(--border); border-radius: 0 8px 8px 0; margin-bottom: 2px; }
+.cluster-row:last-child { border-bottom: none; }
+.cluster-row.v-zero_clicks { border-left-color: var(--negative); }
+.cluster-row.v-check { border-left-color: var(--warn-text); }
+.cluster-row.v-scale { border-left-color: var(--positive); }
+.verdict-pill { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 6px; letter-spacing: .02em; white-space: nowrap; }
+.verdict-pill.v-zero_clicks { background: color-mix(in srgb, var(--negative) 16%, transparent); color: var(--negative); }
+.verdict-pill.v-check { background: color-mix(in srgb, var(--warn-text) 16%, transparent); color: var(--warn-text); }
+.verdict-pill.v-scale { background: color-mix(in srgb, var(--positive) 16%, transparent); color: var(--positive); }
+.verdict-pill.v-normal { background: var(--surface-2); color: var(--text-secondary); }
+
+/* Теплокарта артикулы × дни */
+.heatmap-wrap { overflow-x: auto; }
+.heatmap { border-collapse: separate; border-spacing: 3px; font-size: 11px; }
+.heatmap th { font-weight: 600; color: var(--text-secondary); padding: 2px 4px; text-align: center; white-space: nowrap; }
+.heatmap td.row-h { text-align: left; padding-right: 8px; color: var(--text-secondary); white-space: nowrap; max-width: 130px; overflow: hidden; text-overflow: ellipsis; font-size: 11.5px; }
+.heatmap .cell { width: 32px; height: 26px; border-radius: 5px; text-align: center; font-size: 10px; color: var(--text); font-family: var(--font-mono); }
 .expense-breakdown.expanded .expense-summary { display: none; }
 .expense-breakdown:not(.expanded) .expense-detail { display: none; }
 .price-profit-row { display: flex; justify-content: space-between; align-items: baseline; padding-top: 8px; border-top: 1px solid var(--border); }
@@ -963,16 +1004,21 @@ function abcAnalysisHtml(products) {
     const rev = items.reduce((s, p) => s + p.revenue, 0);
     const profit = items.reduce((s, p) => s + p.profit, 0);
     const margin = rev ? profit / rev * 100 : 0;
-    return `<div class="kpi-card">
-      <div class="k">Класс ${cls} · ${label}</div>
+    const borderColor = cls === 'A' ? 'var(--positive)' : cls === 'B' ? 'var(--accent-2)' : 'var(--border)';
+    return `<div class="kpi-card" style="border-left:3px solid ${borderColor}">
+      <div class="k"><span class="abc-pill cls-${cls}" style="margin-right:6px">${cls}</span>${label}</div>
       <div class="v">${items.length}</div>
       <div class="kpi-sub">${fmtMoney(rev)} · прибыль ${fmtMoney(profit)} · маржа ${margin.toFixed(1)}%</div>
     </div>`;
   };
   const table = rows.map(r => `
-    <div class="expense-row">
-      <span><b style="color:var(--text)">${r.cls}</b> · ${(r.title || '').slice(0, 42)}</span>
-      <span>${fmtMoney(r.revenue)} · ${r.share.toFixed(1)}% · накопл. ${r.cumPct.toFixed(1)}%${r.has_cost_price ? ` · маржа ${r.margin_percent.toFixed(1)}%` : ''}</span>
+    <div class="abc-row">
+      <span class="abc-pill cls-${r.cls}">${r.cls}</span>
+      <span class="abc-name">
+        <span class="nm">${r.title || ''}</span>
+        <span class="abc-bar"><i style="width:${r.share.toFixed(1)}%"></i></span>
+      </span>
+      <span class="abc-stats">${fmtMoney(r.revenue)}<br>${r.share.toFixed(1)}% · накопл. ${r.cumPct.toFixed(0)}%${r.has_cost_price ? `<br>маржа ${r.margin_percent.toFixed(1)}%` : ''}</span>
     </div>`).join('');
   return `
     <div class="card">
@@ -983,7 +1029,7 @@ function abcAnalysisHtml(products) {
     </div>
     <div class="card">
       <h3>Товары по классам</h3>
-      <div style="margin-top:6px">${table}</div>
+      <div style="margin-top:4px">${table}</div>
     </div>`;
 }
 
@@ -1002,39 +1048,105 @@ function wbFindingsHtml(data) {
   const totalProfit = products.reduce((s, p) => s + p.profit, 0);
   const leader = [...products].sort((a, b) => b.revenue - a.revenue)[0];
   if (leader && totalRevenue) {
-    findings.push(`<b>Лидер по выручке</b> — «${leader.title}»: ${(leader.revenue / totalRevenue * 100).toFixed(1)}% выручки, прибыль ${fmtMoney(leader.profit)}${totalProfit ? ` (${(leader.profit / totalProfit * 100).toFixed(1)}% всей прибыли)` : ''}.`);
+    findings.push({
+      cls: 'good', tag: 'Лидер', fig: (leader.revenue / totalRevenue * 100).toFixed(1) + '%',
+      text: `«${leader.title}» — ${fmtMoney(leader.revenue)} выручки, прибыль ${fmtMoney(leader.profit)}${totalProfit ? ` (${(leader.profit / totalProfit * 100).toFixed(1)}% всей прибыли)` : ''}.`,
+    });
   }
 
   const withCost = products.filter(p => p.has_cost_price && p.qty > 0);
   if (withCost.length) {
     const lowMargin = [...withCost].sort((a, b) => a.margin_percent - b.margin_percent)[0];
     if (lowMargin.margin_percent < 15) {
-      findings.push(`<b>Низкая маржа</b> — «${lowMargin.title}»: ${lowMargin.margin_percent.toFixed(1)}%, ниже 15%. Стоит проверить цену, логистику или долю возвратов.`);
+      findings.push({
+        cls: 'alert', tag: 'Низкая маржа', fig: lowMargin.margin_percent.toFixed(1) + '%',
+        text: `«${lowMargin.title}» — ниже 15%. Стоит проверить цену, логистику или долю возвратов.`,
+      });
     }
   }
 
   if (daily.length > 1) {
     const bestDay = [...daily].sort((a, b) => b.revenue - a.revenue)[0];
-    findings.push(`<b>Лучший день</b> — ${bestDay.date}: ${fmtMoney(bestDay.revenue)} выручки.`);
+    findings.push({
+      cls: '', tag: 'Лучший день', fig: bestDay.date.slice(5),
+      text: `${fmtMoney(bestDay.revenue)} выручки — больше остальных дней периода.`,
+    });
   }
 
   if (acc.ad_spend) {
     const drr = acc.revenue ? acc.ad_spend / acc.revenue * 100 : 0;
-    findings.push(`<b>Реклама</b> — расход ${fmtMoney(acc.ad_spend)} (ДРР ${drr.toFixed(1)}%), после всех расходов прибыль ${fmtMoney(acc.profit)}.`);
+    findings.push({
+      cls: drr > 20 ? 'alert' : '', tag: 'Реклама (ДРР)', fig: drr.toFixed(1) + '%',
+      text: `Расход ${fmtMoney(acc.ad_spend)}, после всех расходов прибыль ${fmtMoney(acc.profit)}.`,
+    });
   }
 
   const noCost = products.filter(p => !p.has_cost_price).length;
   if (noCost) {
-    findings.push(`<b>Не указана себестоимость</b> — у ${noCost} товар(ов) с продажами за период. Прибыль по ним считается неточно.`);
+    findings.push({
+      cls: 'alert', tag: 'Без себестоимости', fig: String(noCost),
+      text: `товар(ов) с продажами за период — прибыль по ним считается неточно.`,
+    });
   }
 
   if (!findings.length) return '';
   return `<div class="card">
     <h3>Что бросается в глаза</h3>
-    <div style="display:flex;flex-direction:column;gap:9px;margin-top:8px;font-size:13px;line-height:1.5;color:var(--text-secondary)">
-      ${findings.map(f => `<div>• ${f}</div>`).join('')}
+    <div class="finding-grid">
+      ${findings.map(f => `<div class="finding-card ${f.cls}">
+        <div class="f-tag">${f.tag}</div>
+        <div class="f-fig">${f.fig}</div>
+        <p>${f.text}</p>
+      </div>`).join('')}
     </div>
   </div>`;
+}
+
+function donutTopData(products) {
+  const sold = [...products].filter(p => p.revenue > 0).sort((a, b) => b.revenue - a.revenue);
+  const top5 = sold.slice(0, 5);
+  const rest = sold.slice(5);
+  const restRevenue = rest.reduce((s, p) => s + p.revenue, 0);
+  const labels = top5.map(p => p.title || '');
+  const values = top5.map(p => p.revenue);
+  if (restRevenue > 0) { labels.push(`Прочие (${rest.length})`); values.push(restRevenue); }
+  const palette = ['--accent', '--accent-2', '--accent-3', '--positive', '--warn-text', '--text-secondary'].map(cssVar);
+  return { labels, values, colors: palette.slice(0, values.length), total: values.reduce((a, b) => a + b, 0) };
+}
+
+function donutLegendHtml(donutTop) {
+  return donutTop.labels.map((l, i) => `
+    <div style="display:flex;align-items:center;gap:8px;font-size:12.5px">
+      <span style="width:10px;height:10px;border-radius:3px;background:${donutTop.colors[i]};flex:none"></span>
+      <span style="flex:1;min-width:0;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${l}</span>
+      <b style="color:var(--text);white-space:nowrap">${fmtMoney(donutTop.values[i])} · ${(donutTop.values[i] / donutTop.total * 100).toFixed(0)}%</b>
+    </div>`).join('');
+}
+
+function heatmapHtml(data) {
+  const dailyByNm = data.daily_by_nm || {};
+  const days = (data.daily || []).map(d => d.date);
+  if (!days.length) return '<div class="state-msg">Нет данных за период</div>';
+  const topProducts = [...(data.products || [])].filter(p => p.revenue > 0).sort((a, b) => b.revenue - a.revenue).slice(0, 8);
+  if (!topProducts.length) return '<div class="state-msg">Нет данных за период</div>';
+
+  const rows = topProducts.map(p => {
+    const byDate = dailyByNm[String(p.nm_id)] || {};
+    const values = days.map(d => byDate[d] || 0);
+    return { title: p.title || '', values, max: Math.max(...values, 0) };
+  });
+
+  const head = `<tr><th></th>${days.map(d => `<th>${d.slice(5)}</th>`).join('')}</tr>`;
+  const body = rows.map(r => `<tr>
+    <td class="row-h">${r.title}</td>
+    ${r.values.map(v => {
+      const intensity = r.max ? v / r.max : 0;
+      const bg = v ? `color-mix(in srgb, var(--accent) ${Math.round(12 + intensity * 78)}%, var(--surface-2))` : 'var(--surface-2)';
+      return `<td><div class="cell" style="background:${bg}" title="${r.title}: ${fmtMoney(v)} ₽"></div></td>`;
+    }).join('')}
+  </tr>`).join('');
+
+  return `<div class="heatmap-wrap"><table class="heatmap">${head}${body}</table></div>`;
 }
 
 function renderAnalytics(data) {
@@ -1044,6 +1156,7 @@ function renderAnalytics(data) {
   const acc = data.account, cmp = data.compare || {};
   const daily = data.daily || [];
   const topByRevenue = [...(data.products || [])].sort((a, b) => b.revenue - a.revenue).slice(0, 10);
+  const donutTop = isWB ? donutTopData(data.products || []) : { labels: [], values: [] };
 
   el.innerHTML = `
     <div class="card">
@@ -1099,6 +1212,22 @@ function renderAnalytics(data) {
       <h3>Топ-10 товаров по выручке</h3>
       ${topByRevenue.length ? `<canvas id="topRevenueChart" style="max-height:340px"></canvas>` : '<div class="state-msg">Нет данных за период</div>'}
     </div>
+
+    ${isWB ? `
+    <div class="card">
+      <h3>Структура выручки по артикулам</h3>
+      <div class="notice" style="margin-bottom:10px">Топ-5 и «Прочие»</div>
+      ${donutTop.values.length ? `
+      <div style="display:flex;justify-content:center"><canvas id="revenueDonut" style="max-height:230px"></canvas></div>
+      <div style="margin-top:14px;display:flex;flex-direction:column;gap:7px">${donutLegendHtml(donutTop)}</div>
+      ` : '<div class="state-msg">Нет данных за период</div>'}
+    </div>
+
+    <div class="card">
+      <h3>Артикулы × дни</h3>
+      <div class="notice" style="margin-bottom:8px">Насыщенность клетки — доля от максимума выручки этого товара за период. Топ-8 по выручке.</div>
+      ${heatmapHtml(data)}
+    </div>` : ''}
 
     ${isWB ? abcAnalysisHtml(data.products || []) : ''}
     ${isWB ? wbFindingsHtml(data) : ''}
@@ -1160,6 +1289,23 @@ function renderAnalytics(data) {
         scales: {
           x: { grid: { color: cssVar('--border') }, ticks: { color: cssVar('--text-secondary'), font: { size: 10 }, callback: v => (v/1000) + 'k' } },
           y: { grid: { display: false }, ticks: { color: cssVar('--text-secondary'), font: { size: 10 } } },
+        },
+      },
+    });
+  }
+
+  if (isWB && donutTop.values.length) {
+    new Chart(document.getElementById('revenueDonut'), {
+      type: 'doughnut',
+      data: {
+        labels: donutTop.labels,
+        datasets: [{ data: donutTop.values, backgroundColor: donutTop.colors, borderColor: cssVar('--surface'), borderWidth: 2 }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: '62%',
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: c => `${c.label}: ${fmtMoney(c.parsed)} (${(c.parsed / donutTop.total * 100).toFixed(0)}%)` } },
         },
       },
     });
@@ -2423,7 +2569,7 @@ function renderAds(data) {
   document.getElementById('adsList').addEventListener('click', async (e) => {
     const excludeBtn = e.target.closest('.cluster-exclude-btn');
     if (excludeBtn) {
-      const row = excludeBtn.closest('.expense-row');
+      const row = excludeBtn.closest('.cluster-row');
       const card = excludeBtn.closest('.price-card');
       const advertId = card.dataset.advertId;
       const normQuery = excludeBtn.dataset.normQuery;
@@ -2449,6 +2595,17 @@ function renderAds(data) {
       return;
     }
 
+    const chip = e.target.closest('.cluster-filter-chip');
+    if (chip) {
+      const box = chip.closest('.cluster-box');
+      box.querySelectorAll('.cluster-filter-chip').forEach(b => b.classList.toggle('active-chip', b === chip));
+      const verdict = chip.dataset.verdict;
+      const list = box.querySelector('.cluster-list');
+      const filtered = verdict === 'all' ? box._clusters : box._clusters.filter(cl => cl.verdict === verdict);
+      list.innerHTML = clusterRowsHtml(filtered);
+      return;
+    }
+
     const btn = e.target.closest('.cluster-toggle-btn');
     if (!btn) return;
     const card = btn.closest('.price-card');
@@ -2460,7 +2617,8 @@ function renderAds(data) {
     box.innerHTML = '<div class="state-msg">Загрузка кластеров…</div>';
     try {
       const resp = await apiFetch(`/api/cabinets/${activeCabinetId}/ads/${advertId}/clusters?days=${adsDays}`);
-      box.innerHTML = clusterRowsHtml(resp.clusters || []);
+      box._clusters = resp.clusters || [];
+      box.innerHTML = clusterBoxHtml(box._clusters);
       box.dataset.loaded = '1';
     } catch (err) {
       box.innerHTML = `<div class="state-msg">Не удалось загрузить: ${err.message}</div>`;
@@ -2489,23 +2647,32 @@ function adCardHtml(c) {
   </div>`;
 }
 
-function verdictColor(verdict) {
-  if (verdict === 'zero_clicks') return 'var(--negative)';
-  if (verdict === 'check') return 'var(--warn-text)';
-  if (verdict === 'scale') return 'var(--positive)';
-  return 'var(--text-secondary)';
+const VERDICT_CHIP_LABELS = { zero_clicks: 'Зачистить', check: 'Проверить', scale: 'Масштабировать', normal: 'Норма' };
+
+function clusterBoxHtml(clusters) {
+  if (!clusters.length) return '<div class="state-msg">Нет данных по фразам за этот период</div>';
+  const counts = { zero_clicks: 0, check: 0, scale: 0, normal: 0 };
+  clusters.forEach(cl => { counts[cl.verdict] = (counts[cl.verdict] || 0) + 1; });
+  const chips = ['all', 'zero_clicks', 'check', 'scale'].map(v => {
+    const label = v === 'all' ? `Все (${clusters.length})` : `${VERDICT_CHIP_LABELS[v]} (${counts[v] || 0})`;
+    if (v !== 'all' && !counts[v]) return '';
+    return `<button type="button" class="cluster-filter-chip ${v === 'all' ? 'active-chip' : ''}" data-verdict="${v}">${label}</button>`;
+  }).join('');
+  return `
+    <div class="quick-chips" style="margin-bottom:2px">${chips}</div>
+    <div class="cluster-list">${clusterRowsHtml(clusters)}</div>`;
 }
 
 function clusterRowsHtml(clusters) {
-  if (!clusters.length) return '<div class="state-msg">Нет данных по фразам за этот период</div>';
+  if (!clusters.length) return '<div class="state-msg">Ничего не найдено по этому фильтру</div>';
   return clusters.map(cl => `
-    <div class="expense-row" style="align-items:flex-start;gap:8px">
+    <div class="cluster-row v-${cl.verdict}">
       <span style="flex:1 1 auto;min-width:0">
         <span style="color:var(--text)">${cl.norm_query}</span>${cl.views ? '' : ' <span style="color:var(--text-secondary)">(cpc)</span>'}
-        <div style="font-size:11px;color:${verdictColor(cl.verdict)};margin-top:2px">${cl.verdict_label}</div>
+        <div style="margin-top:4px"><span class="verdict-pill v-${cl.verdict}">${cl.verdict_label}</span></div>
       </span>
       <span style="flex:0 0 auto;text-align:right;display:flex;align-items:center;gap:6px">
-        <span>−${fmtMoney(cl.spend)} ₽${cl.clicks ? ` · ${fmtNum(cl.clicks)} кл.${cl.ctr !== null ? ` · CTR ${cl.ctr}%` : ''} · CPC ${fmtMoney(cl.cpc || 0)}` : ''}${cl.orders ? ` · ${cl.orders} зак.` : ''}</span>
+        <span style="font-size:11px;color:var(--text-secondary);font-family:var(--font-mono)">−${fmtMoney(cl.spend)} ₽${cl.clicks ? ` · ${fmtNum(cl.clicks)} кл.${cl.ctr !== null ? ` · CTR ${cl.ctr}%` : ''} · CPC ${fmtMoney(cl.cpc || 0)}` : ''}${cl.orders ? ` · ${cl.orders} зак.` : ''}</span>
         <button class="cluster-exclude-btn" type="button" data-norm-query="${cl.norm_query.replace(/"/g, '&quot;')}" title="Исключить эту фразу/кластер из кампании" style="flex:none;padding:2px 8px;border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--negative);cursor:pointer">✕</button>
       </span>
     </div>`).join('');
