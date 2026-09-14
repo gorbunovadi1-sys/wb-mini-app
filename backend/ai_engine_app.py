@@ -604,7 +604,8 @@ def get_cabinet_ad_clusters(
     if cabinet["marketplace"] != "wb":
         raise HTTPException(status_code=400, detail="Доступно только для WB")
     client = _build_client(cabinet)
-    return {"clusters": wb_ads.get_campaign_clusters(client, advert_id, days=days)}
+    clusters = wb_ads.get_campaign_clusters(client, advert_id, days=days)
+    return {"clusters": clusters, "summary": wb_ads.cluster_summary(clusters)}
 
 
 @app.post("/api/cabinets/{cabinet_id}/ads/{advert_id}/exclude-phrase")

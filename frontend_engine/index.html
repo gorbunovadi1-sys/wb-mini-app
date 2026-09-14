@@ -2568,6 +2568,35 @@ function renderAds(data) {
   // doesn't leave room to fetch it for every campaign up front on an
   // account with dozens of them.
   document.getElementById('adsList').addEventListener('click', async (e) => {
+    const bulkBtn = e.target.closest('.cluster-bulk-exclude-btn');
+    if (bulkBtn) {
+      const box = bulkBtn.closest('.cluster-box');
+      const card = bulkBtn.closest('.price-card');
+      const advertId = card.dataset.advertId;
+      const toClean = box._clusters.filter(cl => VERDICT_GROUPS.clean.includes(cl.verdict));
+      if (!toClean.length) return;
+      if (!confirm(`Исключить сразу ${toClean.length} фраз(ы) из показа по этой кампании? Применится ко всем товарам кампании.`)) return;
+      bulkBtn.disabled = true;
+      let done = 0;
+      const failedPhrases = [];
+      for (const cl of toClean) {
+        bulkBtn.textContent = `Зачищаю ${done + 1}/${toClean.length}…`;
+        try {
+          await excludeOnePhrase(advertId, cl.norm_query);
+          done++;
+        } catch (err) {
+          failedPhrases.push(cl.norm_query);
+        }
+        await new Promise(r => setTimeout(r, 300)); // gentle on WB's rate limit across a whole batch
+      }
+      box._clusters = box._clusters.filter(cl => !toClean.includes(cl) || failedPhrases.includes(cl.norm_query));
+      box.innerHTML = clusterBoxHtml(box._clusters);
+      alert(failedPhrases.length
+        ? `Готово: исключено ${done}, не удалось: ${failedPhrases.length} (${failedPhrases.join(', ')})`
+        : `Готово: исключено ${done} фраз(ы).`);
+      return;
+    }
+
     const excludeBtn = e.target.closest('.cluster-exclude-btn');
     if (excludeBtn) {
       const row = excludeBtn.closest('.cluster-row');
@@ -2578,11 +2607,7 @@ function renderAds(data) {
       excludeBtn.disabled = true;
       excludeBtn.textContent = '…';
       try {
-        const resp = await apiFetch(`/api/cabinets/${activeCabinetId}/ads/${advertId}/exclude-phrase`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ norm_query: normQuery }),
-        });
+        const resp = await excludeOnePhrase(advertId, normQuery);
         if (resp.failed && resp.failed.length) {
           alert(`Частично не удалось: для ${resp.failed.length} товар(ов) кампании не применилось (обновлено ${resp.updated.length}).`);
         }
@@ -2627,6 +2652,14 @@ function renderAds(data) {
   });
 }
 
+function excludeOnePhrase(advertId, normQuery) {
+  return apiFetch(`/api/cabinets/${activeCabinetId}/ads/${advertId}/exclude-phrase`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ norm_query: normQuery }),
+  });
+}
+
 function adCardHtml(c) {
   const drrClass = c.drr === null ? '' : (c.drr > 20 ? 'neg' : 'pos');
   return `<div class="price-card" data-advert-id="${c.id}">
@@ -2658,6 +2691,14 @@ const VERDICT_GROUPS = { clean: ['zero_clicks', 'zero_orders'], check: ['check']
 
 function clusterBoxHtml(clusters) {
   if (!clusters.length) return '<div class="state-msg">Нет данных по фразам за этот период</div>';
+  const clean = clusters.filter(cl => VERDICT_GROUPS.clean.includes(cl.verdict));
+  const cleanSpend = clean.reduce((s, cl) => s + cl.spend, 0);
+  const summary = clean.length
+    ? `<div class="notice" style="margin-bottom:8px">🧹 ${clean.length} кластер(ов) под зачистку — суммарно ${fmtMoney(cleanSpend)} ₽ расхода без результата</div>`
+    : '';
+  const bulkBtn = clean.length
+    ? `<button type="button" class="cluster-bulk-exclude-btn price-save-btn" style="margin-bottom:10px;width:100%">Зачистить всё (${clean.length})</button>`
+    : '';
   const chips = ['all', 'clean', 'check', 'scale', 'low_data'].map(v => {
     const count = v === 'all' ? clusters.length : clusters.filter(cl => VERDICT_GROUPS[v].includes(cl.verdict)).length;
     if (v !== 'all' && !count) return '';
@@ -2665,7 +2706,9 @@ function clusterBoxHtml(clusters) {
     return `<button type="button" class="cluster-filter-chip ${v === 'all' ? 'active-chip' : ''}" data-verdict="${v}">${label}</button>`;
   }).join('');
   return `
+    ${summary}
     <div class="quick-chips" style="margin-bottom:2px;flex-wrap:wrap">${chips}</div>
+    ${bulkBtn}
     <div class="cluster-list">${clusterRowsHtml(clusters)}</div>`;
 }
 

@@ -56,19 +56,22 @@ def get_campaign_clusters(client, advert_id: int, days: int = 30) -> list:
     return result
 
 
-# Below this much spend, a cluster's performance doesn't mean anything yet
-# — flagging a 33₽/zero-click cluster as "clean this up" is noise, not a
-# real leak (caught live 2026-09-15, Дарья's own reaction to it). Matches
-# the threshold her own manually-run ad-cleanup routine already uses before
-# judging a cluster at all.
-_MIN_SPEND_FOR_VERDICT = 100  # ₽
+# Below this many impressions, a cluster's performance doesn't mean
+# anything yet — used whenever the campaign actually reports impressions
+# (cpm). Below this much SPEND is the fallback for a cpc campaign, which
+# WB never reports impressions for at all (confirmed live 2026-09-15 —
+# `views` comes back 0/absent on every cpc entry, never a real count), so
+# "100 показов" has nothing to compare against there and spend is the only
+# signal left to gate on.
+_MIN_VIEWS_FOR_VERDICT = 100  # показов (cpm)
+_MIN_SPEND_FOR_VERDICT = 100  # ₽ (cpc fallback)
 
-# Thresholds relative to THIS campaign's own average cost-per-click, not a
-# fixed ruble amount — a cheap click in one category can be an expensive one
-# in another, so "expensive/cheap" only means anything compared to the rest
-# of the same campaign. Matches the reasoning a manually-built weekly ad
-# report already uses for its own "Зачистить/Проверить/Масштабировать"
-# verdict column.
+# Thresholds relative to THIS campaign's own average cost-per-click/
+# conversion rate, not fixed numbers — a cheap click or a 2% CR in one
+# category can be expensive/bad in another, so these only mean anything
+# compared to the rest of the same campaign. Matches the reasoning a
+# manually-built weekly ad report already uses for its own "Зачистить/
+# Проверить/Масштабировать" verdict column.
 _SCALE_CPC_RATIO = 0.7  # cpc at or below 70% of campaign average — cheap traffic
 _CHECK_CPC_RATIO = 1.5  # cpc at or above 150% of campaign average — worth a look
 
@@ -81,12 +84,24 @@ def _assign_verdicts(clusters: list) -> None:
     spent_with_clicks = [c for c in clusters if c["clicks"]]
     total_spend = sum(c["spend"] for c in spent_with_clicks)
     total_clicks = sum(c["clicks"] for c in spent_with_clicks)
+    total_orders = sum(c["orders"] for c in spent_with_clicks)
     avg_cpc = (total_spend / total_clicks) if total_clicks else None
+    avg_cr = (total_orders / total_clicks * 100) if total_clicks else None
+
+    # A campaign either reports real impression counts throughout (cpm) or
+    # never does (cpc) — never a mix — so one cluster having any views at
+    # all is a reliable signal for the whole campaign, no need to thread
+    # payment_type through the call chain separately.
+    has_views_data = any(c["views"] for c in clusters)
 
     for c in clusters:
-        if c["spend"] < _MIN_SPEND_FOR_VERDICT:
+        enough_data = (c["views"] >= _MIN_VIEWS_FOR_VERDICT) if has_views_data else (c["spend"] >= _MIN_SPEND_FOR_VERDICT)
+        if not enough_data:
             c["verdict"] = "low_data"
-            c["verdict_label"] = f"Мало данных — потрачено всего {c['spend']} ₽"
+            c["verdict_label"] = (
+                f"Мало данных — всего {c['views']} показов" if has_views_data
+                else f"Мало данных — потрачено всего {c['spend']} ₽"
+            )
         elif not c["clicks"] and not c["orders"]:
             # Real spend, nobody even clicked — a targeting/bid problem
             # (the ad isn't earning attention), distinct from the next case
@@ -102,18 +117,40 @@ def _assign_verdicts(clusters: list) -> None:
             c["verdict"] = "zero_orders"
             c["verdict_label"] = f"Зачистить — {c['spend']} ₽ расхода, {c['clicks']} кликов, 0 заказов"
         elif c["cpc"] is not None and avg_cpc:
-            if c["cpc"] <= avg_cpc * _SCALE_CPC_RATIO:
+            cr = (c["orders"] / c["clicks"] * 100) if c["clicks"] else 0
+            cheap = c["cpc"] <= avg_cpc * _SCALE_CPC_RATIO
+            expensive = c["cpc"] >= avg_cpc * _CHECK_CPC_RATIO
+            converting_ok = avg_cr is None or cr >= avg_cr
+            if cheap and converting_ok:
                 c["verdict"] = "scale"
-                c["verdict_label"] = f"Масштабировать — клик дешевле среднего ({round(avg_cpc, 2)} ₽) по кампании, есть заказы"
-            elif c["cpc"] >= avg_cpc * _CHECK_CPC_RATIO:
+                c["verdict_label"] = f"Масштабировать — клик дешевле среднего ({round(avg_cpc, 2)} ₽), конверсия {round(cr, 1)}% не хуже средней"
+            elif expensive or (cheap and not converting_ok):
+                # Cheap clicks that convert worse than average are still
+                # worth a look, not an automatic scale-up — cheap traffic
+                # that doesn't buy just means cheap wasted spend.
                 c["verdict"] = "check"
-                c["verdict_label"] = f"Проверить — клик дороже среднего ({round(avg_cpc, 2)} ₽) по кампании"
+                reason = "клик дороже среднего" if expensive else "дешёвый клик, но конверсия ниже средней"
+                c["verdict_label"] = f"Проверить — {reason} ({round(avg_cpc, 2)} ₽ в среднем по кампании)"
             else:
                 c["verdict"] = "normal"
                 c["verdict_label"] = "Норма"
         else:
             c["verdict"] = "normal"
             c["verdict_label"] = "Норма"
+
+
+def cluster_summary(clusters: list) -> dict:
+    """Rollup for the campaign card — "N кластеров под зачистку, ₽X можно
+    сэкономить" — shown once the cluster box is opened rather than fetched
+    for every campaign up front (see get_campaign_clusters's own docstring
+    on why: normquery/stats' rate limit doesn't allow that)."""
+    clean = [c for c in clusters if c["verdict"] in ("zero_clicks", "zero_orders")]
+    return {
+        "clean_count": len(clean),
+        "clean_spend": round(sum(c["spend"] for c in clean), 2),
+        "check_count": sum(1 for c in clusters if c["verdict"] == "check"),
+        "scale_count": sum(1 for c in clusters if c["verdict"] == "scale"),
+    }
 
 
 def exclude_cluster_from_campaign(client, advert_id: int, norm_query: str) -> dict:
