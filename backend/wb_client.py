@@ -18,6 +18,27 @@ ANALYTICS_BASE = "https://seller-analytics-api.wildberries.ru"
 _FINANCE_MIN_INTERVAL = 61
 
 
+def nm_ids_from_campaign_detail(detail: dict) -> set:
+    """A campaign detail object (from WBClient.get_campaign_details) can
+    come back in either of two shapes WB has live at once (confirmed
+    2026-09-15 against a real account with both): the older
+    {params|unitedParams|autoParams: [{nms: [...]}, ...]} shape, or the
+    newer "unified auction" {nm_settings: [{nm_id, ...}, ...]} shape. Tries
+    both rather than assume an account is on one or the other."""
+    nm_ids = set()
+    for key in ("params", "unitedParams", "autoParams"):
+        block = detail.get(key)
+        if isinstance(block, list):
+            for p in block:
+                nm_ids.update(p.get("nms") or [])
+        elif isinstance(block, dict):
+            nm_ids.update(block.get("nms") or [])
+    for ns in (detail.get("nm_settings") or []):
+        if ns.get("nm_id"):
+            nm_ids.add(ns["nm_id"])
+    return nm_ids
+
+
 def _sanitize_key(raw: str) -> str:
     """WB API keys are JWTs (base64url segments joined by dots), so only
     A-Z a-z 0-9 . _ - are ever valid. Strips anything else — guards against

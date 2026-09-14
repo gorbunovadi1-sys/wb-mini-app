@@ -590,6 +590,23 @@ def get_cabinet_ads(
     )
 
 
+@app.get("/api/cabinets/{cabinet_id}/ads/{advert_id}/clusters")
+def get_cabinet_ad_clusters(
+    cabinet_id: int,
+    advert_id: int,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+    days: int = 30,
+):
+    days = max(7, min(days, 90))
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
+    if cabinet["marketplace"] != "wb":
+        raise HTTPException(status_code=400, detail="Доступно только для WB")
+    client = _build_client(cabinet)
+    return {"clusters": wb_ads.get_campaign_clusters(client, advert_id, days=days)}
+
+
 @app.get("/api/cabinets/{cabinet_id}/ozon/dimensions")
 def get_cabinet_ozon_dimensions(
     cabinet_id: int,

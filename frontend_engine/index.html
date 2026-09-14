@@ -940,8 +940,107 @@ async function loadAnalytics() {
   }
 }
 
+function abcAnalysisHtml(products) {
+  // Classic revenue ABC split: A = top items making up to 80% of revenue,
+  // B = the next slice up to 95%, C = the long tail. Computed client-side
+  // from data the margin endpoint already returns per product — no new
+  // backend endpoint needed for this.
+  const sold = products.filter(p => p.revenue > 0);
+  if (!sold.length) return '';
+  const sorted = [...sold].sort((a, b) => b.revenue - a.revenue);
+  const total = sorted.reduce((s, p) => s + p.revenue, 0);
+  let cum = 0;
+  const rows = sorted.map(p => {
+    cum += p.revenue;
+    const cumPct = total ? cum / total * 100 : 0;
+    const cls = cumPct <= 80 ? 'A' : cumPct <= 95 ? 'B' : 'C';
+    return { ...p, cls, share: total ? p.revenue / total * 100 : 0, cumPct };
+  });
+  const buckets = { A: [], B: [], C: [] };
+  rows.forEach(r => buckets[r.cls].push(r));
+  const bucketCard = (cls, label) => {
+    const items = buckets[cls];
+    const rev = items.reduce((s, p) => s + p.revenue, 0);
+    const profit = items.reduce((s, p) => s + p.profit, 0);
+    const margin = rev ? profit / rev * 100 : 0;
+    return `<div class="kpi-card">
+      <div class="k">Класс ${cls} · ${label}</div>
+      <div class="v">${items.length}</div>
+      <div class="kpi-sub">${fmtMoney(rev)} · прибыль ${fmtMoney(profit)} · маржа ${margin.toFixed(1)}%</div>
+    </div>`;
+  };
+  const table = rows.map(r => `
+    <div class="expense-row">
+      <span><b style="color:var(--text)">${r.cls}</b> · ${(r.title || '').slice(0, 42)}</span>
+      <span>${fmtMoney(r.revenue)} · ${r.share.toFixed(1)}% · накопл. ${r.cumPct.toFixed(1)}%${r.has_cost_price ? ` · маржа ${r.margin_percent.toFixed(1)}%` : ''}</span>
+    </div>`).join('');
+  return `
+    <div class="card">
+      <h3>ABC-анализ по выручке</h3>
+      <div class="kpi-grid" style="margin-top:10px">
+        ${bucketCard('A', 'до 80% выручки')}${bucketCard('B', '80–95%')}${bucketCard('C', 'хвост 95–100%')}
+      </div>
+    </div>
+    <div class="card">
+      <h3>Товары по классам</h3>
+      <div style="margin-top:6px">${table}</div>
+    </div>`;
+}
+
+function wbFindingsHtml(data) {
+  // Deliberately modest, high-confidence findings derived straight from
+  // numbers the margin endpoint already computed — not a full replacement
+  // for the richer text findings/action-plan a manually-built weekly
+  // report can produce, just a first pass worth iterating on.
+  const products = (data.products || []).filter(p => p.revenue > 0);
+  const acc = data.account;
+  const daily = data.daily || [];
+  if (!products.length) return '';
+  const findings = [];
+
+  const totalRevenue = products.reduce((s, p) => s + p.revenue, 0);
+  const totalProfit = products.reduce((s, p) => s + p.profit, 0);
+  const leader = [...products].sort((a, b) => b.revenue - a.revenue)[0];
+  if (leader && totalRevenue) {
+    findings.push(`<b>Лидер по выручке</b> — «${leader.title}»: ${(leader.revenue / totalRevenue * 100).toFixed(1)}% выручки, прибыль ${fmtMoney(leader.profit)}${totalProfit ? ` (${(leader.profit / totalProfit * 100).toFixed(1)}% всей прибыли)` : ''}.`);
+  }
+
+  const withCost = products.filter(p => p.has_cost_price && p.qty > 0);
+  if (withCost.length) {
+    const lowMargin = [...withCost].sort((a, b) => a.margin_percent - b.margin_percent)[0];
+    if (lowMargin.margin_percent < 15) {
+      findings.push(`<b>Низкая маржа</b> — «${lowMargin.title}»: ${lowMargin.margin_percent.toFixed(1)}%, ниже 15%. Стоит проверить цену, логистику или долю возвратов.`);
+    }
+  }
+
+  if (daily.length > 1) {
+    const bestDay = [...daily].sort((a, b) => b.revenue - a.revenue)[0];
+    findings.push(`<b>Лучший день</b> — ${bestDay.date}: ${fmtMoney(bestDay.revenue)} выручки.`);
+  }
+
+  if (acc.ad_spend) {
+    const drr = acc.revenue ? acc.ad_spend / acc.revenue * 100 : 0;
+    findings.push(`<b>Реклама</b> — расход ${fmtMoney(acc.ad_spend)} (ДРР ${drr.toFixed(1)}%), после всех расходов прибыль ${fmtMoney(acc.profit)}.`);
+  }
+
+  const noCost = products.filter(p => !p.has_cost_price).length;
+  if (noCost) {
+    findings.push(`<b>Не указана себестоимость</b> — у ${noCost} товар(ов) с продажами за период. Прибыль по ним считается неточно.`);
+  }
+
+  if (!findings.length) return '';
+  return `<div class="card">
+    <h3>Что бросается в глаза</h3>
+    <div style="display:flex;flex-direction:column;gap:9px;margin-top:8px;font-size:13px;line-height:1.5;color:var(--text-secondary)">
+      ${findings.map(f => `<div>• ${f}</div>`).join('')}
+    </div>
+  </div>`;
+}
+
 function renderAnalytics(data) {
   const el = document.getElementById('content');
+  const cabinet = activeCabinet();
+  const isWB = cabinet && cabinet.marketplace === 'wb';
   const acc = data.account, cmp = data.compare || {};
   const daily = data.daily || [];
   const topByRevenue = [...(data.products || [])].sort((a, b) => b.revenue - a.revenue).slice(0, 10);
@@ -976,6 +1075,21 @@ function renderAnalytics(data) {
       </div>
     </div>
 
+    ${isWB ? `
+    <div class="card">
+      <h3>Куда ушла выручка</h3>
+      <div class="kpi-grid" style="margin-top:10px">
+        <div class="kpi-card"><div class="k">Комиссия WB</div><div class="v">${fmtMoney(acc.commission || 0)}</div></div>
+        <div class="kpi-card"><div class="k">Логистика</div><div class="v">${fmtMoney(acc.logistics || 0)}</div></div>
+        <div class="kpi-card"><div class="k">Хранение и приёмка</div><div class="v">${fmtMoney(acc.storage || 0)}</div></div>
+        <div class="kpi-card"><div class="k">Реклама</div><div class="v">${fmtMoney(acc.ad_spend || 0)}</div></div>
+        <div class="kpi-card"><div class="k">Штрафы/удержания</div><div class="v">${fmtMoney(acc.penalty_deduction || 0)}</div></div>
+        <div class="kpi-card"><div class="k">Себестоимость</div><div class="v">${fmtMoney(acc.cogs_total || 0)}</div></div>
+        <div class="kpi-card"><div class="k">К перечислению</div><div class="v">${fmtMoney(acc.forpay || 0)}</div></div>
+        <div class="kpi-card"><div class="k">Продано, шт.</div><div class="v">${fmtNum(acc.qty_total || 0)}</div></div>
+      </div>
+    </div>` : ''}
+
     <div class="card">
       <h3>Заказы по дням: сумма и количество</h3>
       ${daily.length ? `<canvas id="qtyChart"></canvas>` : '<div class="state-msg">Нет данных за период</div>'}
@@ -985,6 +1099,9 @@ function renderAnalytics(data) {
       <h3>Топ-10 товаров по выручке</h3>
       ${topByRevenue.length ? `<canvas id="topRevenueChart" style="max-height:340px"></canvas>` : '<div class="state-msg">Нет данных за период</div>'}
     </div>
+
+    ${isWB ? abcAnalysisHtml(data.products || []) : ''}
+    ${isWB ? wbFindingsHtml(data) : ''}
   `;
 
   document.getElementById('anApplyPeriod').addEventListener('click', () => {
@@ -2298,11 +2415,34 @@ function renderAds(data) {
   };
   renderList();
   searchEl.addEventListener('input', renderList);
+
+  // Cluster/phrase breakdown is fetched lazily, one campaign at a time, on
+  // click — normquery/stats' rate limit (10 req/min with a personal token)
+  // doesn't leave room to fetch it for every campaign up front on an
+  // account with dozens of them.
+  document.getElementById('adsList').addEventListener('click', async (e) => {
+    const btn = e.target.closest('.cluster-toggle-btn');
+    if (!btn) return;
+    const card = btn.closest('.price-card');
+    const box = card.querySelector('.cluster-box');
+    const advertId = card.dataset.advertId;
+    if (!box.hidden) { box.hidden = true; return; }
+    box.hidden = false;
+    if (box.dataset.loaded) return;
+    box.innerHTML = '<div class="state-msg">Загрузка кластеров…</div>';
+    try {
+      const resp = await apiFetch(`/api/cabinets/${activeCabinetId}/ads/${advertId}/clusters?days=${adsDays}`);
+      box.innerHTML = clusterRowsHtml(resp.clusters || []);
+      box.dataset.loaded = '1';
+    } catch (err) {
+      box.innerHTML = `<div class="state-msg">Не удалось загрузить: ${err.message}</div>`;
+    }
+  });
 }
 
 function adCardHtml(c) {
   const drrClass = c.drr === null ? '' : (c.drr > 20 ? 'neg' : 'pos');
-  return `<div class="price-card">
+  return `<div class="price-card" data-advert-id="${c.id}">
     <div class="p-name">${c.name}</div>
     <div class="price-summary">
       <span>Расход: ${fmtMoney(c.spend)}</span>
@@ -2316,7 +2456,18 @@ function adCardHtml(c) {
       <span>Заказы: ${fmtNum(c.orders)}</span>
       <span>CTR: ${c.ctr}% · CPC: ${fmtMoney(c.cpc)}</span>
     </div>
+    <button class="cluster-toggle-btn" type="button" style="margin-top:8px;width:100%">Кластеры и фразы ▾</button>
+    <div class="cluster-box" hidden style="margin-top:8px"></div>
   </div>`;
+}
+
+function clusterRowsHtml(clusters) {
+  if (!clusters.length) return '<div class="state-msg">Нет данных по фразам за этот период</div>';
+  return clusters.map(cl => `
+    <div class="expense-row">
+      <span>${cl.norm_query}${cl.views ? '' : ' <span style="color:var(--text-secondary)">(cpc)</span>'}</span>
+      <span>−${fmtMoney(cl.spend)} ₽${cl.clicks ? ` · ${fmtNum(cl.clicks)} кл.${cl.ctr !== null ? ` · CTR ${cl.ctr}%` : ''} · CPC ${fmtMoney(cl.cpc || 0)}` : ''}${cl.orders ? ` · ${cl.orders} зак.` : ''}</span>
+    </div>`).join('');
 }
 
 // ==================== Настройки ====================
