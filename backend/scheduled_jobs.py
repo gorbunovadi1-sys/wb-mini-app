@@ -123,7 +123,11 @@ async def _check_dimensions_one(cabinet: dict, bot, semaphore: "asyncio.Semaphor
                     p = pricing_by_offer.get(e["offer_id"])
                     if p:
                         price = p["price"] or p["min_price"] or 0
-                        expense = price * (p["commission_pct"] / 100) + p["logistics_estimate"]
+                        expense = (
+                            price * (p["commission_pct"] / 100)
+                            + p["logistics_estimate"]
+                            + price * ((p.get("acquiring_pct") or 0) / 100)
+                        )
                         profit = price - (p["cogs_unit"] or 0) - expense
                         e["current_profit"] = round(profit, 2)
                         e["current_margin_percent"] = round(profit / price * 100, 2) if price else None
