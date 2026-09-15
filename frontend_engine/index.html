@@ -722,7 +722,7 @@ function renderDashboard(data, cabinet) {
     { label: 'Заказы', value: fmtMoney(acc.orders_revenue || 0), sub: `${fmtNum(acc.orders_qty || 0)} шт. · все заказы за период, кроме отменённых, по цене продажи — от неё считается комиссия Ozon` },
     { label: 'Отменённые заказы', value: fmtMoney(acc.cancelled_revenue || 0), sub: `${fmtNum(acc.cancelled_qty || 0)} шт. · заказы, которые не стали продажей — в прибыль не входят` },
     { label: 'Выкуплено', value: fmtMoney(acc.buyouts_revenue || 0), cmp: cmp.revenue, sub: `${fmtNum(acc.buyouts_qty || 0)} шт.${acc.buyout_rate !== null ? ` · ${acc.buyout_rate}% выкупа` : ''} · реально купленные товары — от них считается всё ниже` },
-    { label: 'Налог', value: fmtMoney(acc.tax || 0), sub: acc.tax_pct ? `${acc.tax_pct}% от цены выкупленных товаров — твой личный налог, не Ozon` : 'не указан % в Настройках — налог не учитывается' },
+    { label: 'Налог', value: fmtMoney(acc.tax || 0), sub: acc.tax_pct ? `${acc.tax_pct}% от реальной цены продажи (после скидки Ozon, до вычета его комиссии) — без учёта «Баллов за скидки», сверено с курсом Ozon по УСН «Доходы»` : 'не указан % в Настройках — налог не учитывается' },
     { label: 'Себестоимость', value: fmtMoney(acc.cogs_total || 0), sub: 'закупочная цена выкупленных товаров' },
     { label: 'Логистика', value: fmtMoney(acc.delivery || 0), sub: 'по факту начислений Ozon, не оценка — включает и обратную логистику при возвратах, и заказы, отменённые уже после отгрузки (Ozon всё равно берёт за доставку)' },
     { label: 'Комиссия', value: fmtMoney(acc.commission || 0), sub: 'комиссия Ozon с выкупленных товаров, по факту начислений — реальная ставка, без вычета бонуса' },
