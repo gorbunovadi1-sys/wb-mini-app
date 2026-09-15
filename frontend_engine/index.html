@@ -522,11 +522,6 @@ let activeView = 'dashboard';
 let periodFrom = isoDate(new Date(Date.now() - 29 * 86400000));
 let periodTo = isoDate(new Date());
 let lastMarginData = null;
-// When true, Дашборд's Ozon KPI cards show data.accrual_view (scoped by
-// accrual date, like Ozon's own "Детализация начислений" report) instead
-// of the default order-date scoping — see accrual_date_totals in
-// backend/ozon_margin.py for why the two legitimately differ.
-let dashboardAccrualMode = false;
 let pricingItems = null;
 let pendingPriceChanges = {}; // offer_id -> price
 let stockItems = null;
@@ -699,11 +694,11 @@ function renderDashboard(data, cabinet) {
   // legitimately differ (see accrual_date_totals in backend/ozon_margin.py)
   // — not a bug in either, just different questions: "what did this
   // period's orders earn, once settled" vs "what did Ozon's books say
-  // happened this period". Own-cost fields (себестоимость/налог/прибыль/
-  // маржа) have no Ozon-report equivalent, so this mode only ever shows the
-  // 7 cards that map onto something in her own Ozon report, not those four.
+  // happened this period". By Дарьина просьбе (2026-09-15) this is now the
+  // only Ozon view shown on Дашборд — the order-date breakdown below stays
+  // in code only as a fallback for the rare case accrual_view is missing.
   const av = data.accrual_view;
-  const accrualMode = isOzon && av && dashboardAccrualMode;
+  const accrualMode = isOzon && !!av;
 
   // Порядок специально повторяет путь денег: от заказа — к тому, что реально
   // осталось у тебя. Верхний блок (Заказы → Выкуплено) — что произошло с
@@ -717,7 +712,11 @@ function renderDashboard(data, cabinet) {
     { label: 'Бонус/компенсация Ozon', value: fmtMoney(av.bonus || 0), sub: 'баллы за скидки, по дате начисления' },
     { label: 'Сборы по товарам', value: fmtMoney(av.item_fees || 0), sub: 'мелкие пооперационные сборы Ozon, по дате начисления' },
     { label: 'Прочие расходы площадки', value: fmtMoney(av.other_fees || 0), sub: 'эквайринг, упаковка, хранение — не привязаны к одному товару' },
-    { label: 'К перечислению от Ozon', value: fmtMoney(av.payout_real || 0), sub: 'то же самое, что в «Итого» её отчёта «Детализация начислений» за этот период (если период совпадает 1-в-1). Себестоимость, налог и чистая прибыль в этом режиме не считаются — их нет в отчётах Ozon, посчитай их в обычном режиме' },
+    { label: 'К перечислению от Ozon', value: fmtMoney(av.payout_real || 0), sub: 'то же самое, что в «Итого» её отчёта «Детализация начислений» за этот период (если период совпадает 1-в-1)' },
+    { label: 'Налог', value: fmtMoney(av.tax || 0), sub: av.tax_pct ? `${av.tax_pct}% от суммы выкупа Ozon за этот период (по дате начисления, как «Выручка» выше)` : 'не указан % в Настройках — налог не учитывается' },
+    { label: 'Себестоимость', value: fmtMoney(av.cogs_total || 0), sub: 'закупочная цена выкупленных товаров — состав выкупа берётся по обычному периоду (у Ozon нет разбивки выкупа по дате начисления), поэтому возможны небольшие расхождения по товарам на границе периода' },
+    { label: 'Чистая прибыль', value: fmtMoney(av.profit || 0), sub: 'к перечислению от Ozon минус налог и себестоимость' },
+    { label: 'Маржа', value: (av.margin_percent || 0).toFixed(1) + '%', sub: 'чистая прибыль ÷ выручка' },
   ] : [
     { label: 'Заказы', value: fmtMoney(acc.orders_revenue || 0), sub: `${fmtNum(acc.orders_qty || 0)} шт. · все заказы за период, кроме отменённых, по цене продажи — от неё считается комиссия Ozon` },
     { label: 'Отменённые заказы', value: fmtMoney(acc.cancelled_revenue || 0), sub: `${fmtNum(acc.cancelled_qty || 0)} шт. · заказы, которые не стали продажей — в прибыль не входят` },
@@ -766,21 +765,6 @@ function renderDashboard(data, cabinet) {
     ${ordersBlock}
     <div class="notice" style="margin-bottom:2px">За период ${data.period_from} — ${data.period_to} (${data.period_days} дн.) · обновлено ${updatedStr}${costTotal ? ` · себестоимость указана для ${costKnown}/${costTotal} товаров` : ''}</div>
 
-    ${isOzon && av ? `
-    <div class="card" style="padding:10px 14px">
-      <div class="toggle-row">
-        <div>
-          <div class="toggle-label">Как у Ozon (по дате начисления)</div>
-          <div class="toggle-sub">Сверка с её отчётом «Финансы → Экономика магазина → Детализация начислений» за тот же период — включай, если сравниваешь цифры напрямую.</div>
-        </div>
-        <label class="switch">
-          <input type="checkbox" id="accrualModeToggle" ${accrualMode ? 'checked' : ''}>
-          <span class="switch-slider"></span>
-        </label>
-      </div>
-    </div>
-    ` : ''}
-
     <div class="kpi-grid">
       ${kpis.map(k => `
         <div class="kpi-card">
@@ -801,16 +785,6 @@ function renderDashboard(data, cabinet) {
       <div class="product-list">${productsHtml}</div>
     </div>
   `;
-
-  const accrualModeToggle = document.getElementById('accrualModeToggle');
-  if (accrualModeToggle) {
-    accrualModeToggle.addEventListener('change', (e) => {
-      dashboardAccrualMode = e.target.checked;
-      // Re-render only — lastMarginData already carries accrual_view, no
-      // need to refetch.
-      renderDashboard(lastMarginData, activeCabinet());
-    });
-  }
 
   document.getElementById('applyPeriod').addEventListener('click', () => {
     const f = document.getElementById('dateFrom').value;

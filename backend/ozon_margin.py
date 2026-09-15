@@ -634,6 +634,23 @@ def build_margin_summary(
         pct = (diff / prev * 100) if prev else None
         return {"prev": round(prev, 2), "diff": round(diff, 2), "pct": round(pct, 2) if pct is not None else None}
 
+    # Дарья wants the "как у Ozon" view to be a complete P&L, not just
+    # Ozon's own money movements — tax and cogs have no Ozon-report
+    # equivalent (see accrual_date_totals's docstring for why the view is
+    # otherwise report-only), but she wants them added anyway. Tax is
+    # computed on THIS view's own revenue (av["revenue"], accrual-date
+    # scoped), not total_revenue (order-date scoped) — matching what she
+    # asked for ("на их сумму выкупа"). cogs_total is reused from the
+    # order-date scope above rather than recomputed per-SKU in the
+    # accrual-date scope: there's no per-SKU quantity in the accrual
+    # entries to attribute a scope-exact figure from (only money amounts),
+    # and the two scopes only diverge for orders near the period boundary.
+    accrual_view["tax_pct"] = tax_pct
+    accrual_view["tax"] = round(accrual_view["revenue"] * (tax_pct / 100), 2)
+    accrual_view["cogs_total"] = round(total_cogs, 2)
+    accrual_view["profit"] = round(accrual_view["payout_real"] - accrual_view["tax"] - accrual_view["cogs_total"], 2)
+    accrual_view["margin_percent"] = round(accrual_view["profit"] / accrual_view["revenue"] * 100, 2) if accrual_view["revenue"] else 0.0
+
     return {
         "generated_at": datetime.datetime.now().isoformat(),
         "period_from": d_from.isoformat(),
