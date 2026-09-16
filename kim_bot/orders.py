@@ -1,15 +1,17 @@
 """Polls WB/Ozon FBS orders into FbsOrder and figures out which ones are
-late for assembly. Two separate concerns kept apart on purpose:
+late for assembly. Three separate concerns kept apart on purpose:
   - sync_* just reflects marketplace state into the DB (idempotent, safe to
     call every poll).
-  - due_alerts() reads that state and decides who's overdue — no network
-    calls, easy to reason about/test independently of the API clients.
+  - overdue_orders()/mark_alerted()/still_overdue_recently() read that state
+    for the twice-daily alert schedule (09:00 morning digest, 15:00 follow-up
+    on the same orders only if still unresolved) — no network calls, easy to
+    reason about/test independently of the API clients.
 """
 import datetime
 import logging
 
 from . import articles
-from .config import ALERT_COOLDOWN_MINUTES, SLA_HOURS
+from .config import SLA_HOURS
 from .db import SessionLocal
 from .models import FbsOrder
 from . import ozon_client
@@ -54,8 +56,9 @@ def sync_wb_orders(client: "wb_client.WBClient", since_date: str):
                 log.warning(f"No status returned for WB order {p['order_id']} — skipping this cycle")
                 continue
             supplier_status = info.get("supplierStatus")
-            pending = wb_client.is_pending_assembly(supplier_status)
-            cancelled = wb_client.is_cancelled(supplier_status)
+            wb_status = info.get("wbStatus")
+            pending = wb_client.is_pending_assembly(supplier_status, wb_status)
+            cancelled = wb_client.is_cancelled(supplier_status, wb_status)
             _upsert(
                 db, "wb", p["order_id"], p["article"], p["qty"],
                 _parse_dt(p["created_at"]), supplier_status,
@@ -86,32 +89,78 @@ def sync_ozon_orders(client: "ozon_client.OzonClient", since_date: str):
         db.commit()
 
 
-def due_alerts() -> list[dict]:
-    """Orders past the SLA that haven't been alerted on recently — marks
-    them alerted (updates last_alert_at/alert_count) and returns what to
-    send. Call this once per poll cycle, after sync_*."""
+def _format_age(age: datetime.timedelta) -> str:
+    total_minutes = int(age.total_seconds() // 60)
+    return f"{total_minutes // 60}ч {total_minutes % 60}мин"
+
+
+def _alert_dict(o: FbsOrder, now: datetime.datetime) -> dict:
+    return {
+        "marketplace": o.marketplace,
+        "order_id": o.order_id,
+        "article": o.article,
+        "age": _format_age(now - o.created_at),
+    }
+
+
+def pending_orders() -> list[dict]:
+    """Every order not yet sent to assembly, right now — for on-demand
+    checks (the /orders bot command), not tied to the alert schedule.
+    Reads whatever sync_orders last wrote (no live API calls here, so it's
+    instant, at most ~15 min stale)."""
     now = datetime.datetime.utcnow()
     sla_cutoff = now - datetime.timedelta(hours=SLA_HOURS)
-    cooldown_cutoff = now - datetime.timedelta(minutes=ALERT_COOLDOWN_MINUTES)
+    with SessionLocal() as db:
+        rows = db.query(FbsOrder).filter(
+            FbsOrder.ready_for_pack_at.is_(None),
+            FbsOrder.cancelled_at.is_(None),
+        ).order_by(FbsOrder.created_at).all()
+        return [
+            {**_alert_dict(o, now), "overdue": o.created_at <= sla_cutoff}
+            for o in rows
+        ]
 
-    alerts = []
+
+def overdue_orders() -> list[dict]:
+    """Every order past the SLA and not yet resolved, right now — no side
+    effects. Used for the 09:00 morning digest."""
+    now = datetime.datetime.utcnow()
+    sla_cutoff = now - datetime.timedelta(hours=SLA_HOURS)
     with SessionLocal() as db:
         candidates = db.query(FbsOrder).filter(
             FbsOrder.ready_for_pack_at.is_(None),
             FbsOrder.cancelled_at.is_(None),
             FbsOrder.created_at <= sla_cutoff,
         ).all()
-        for o in candidates:
-            if o.last_alert_at and o.last_alert_at > cooldown_cutoff:
-                continue
-            age = now - o.created_at
-            alerts.append({
-                "marketplace": o.marketplace,
-                "order_id": o.order_id,
-                "article": o.article,
-                "age_hours": round(age.total_seconds() / 3600, 1),
-            })
-            o.last_alert_at = now
-            o.alert_count += 1
+        return [_alert_dict(o, now) for o in candidates]
+
+
+def mark_alerted(keys: list[tuple]):
+    """Stamps last_alert_at on the given (marketplace, order_id) pairs —
+    call right after sending the morning digest, so still_overdue_recently
+    knows which orders were in it."""
+    now = datetime.datetime.utcnow()
+    with SessionLocal() as db:
+        for marketplace, order_id in keys:
+            o = db.query(FbsOrder).filter_by(marketplace=marketplace, order_id=order_id).first()
+            if o:
+                o.last_alert_at = now
+                o.alert_count += 1
         db.commit()
-    return alerts
+
+
+def still_overdue_recently(within_hours: float = 7) -> list[dict]:
+    """Orders flagged in the morning digest (last_alert_at within the last
+    `within_hours`, i.e. since ~09:00) that are still unresolved — used for
+    the 15:00 follow-up. Deliberately does NOT pick up newly-overdue orders
+    that weren't in the morning digest; those wait for the next morning."""
+    now = datetime.datetime.utcnow()
+    since = now - datetime.timedelta(hours=within_hours)
+    with SessionLocal() as db:
+        candidates = db.query(FbsOrder).filter(
+            FbsOrder.ready_for_pack_at.is_(None),
+            FbsOrder.cancelled_at.is_(None),
+            FbsOrder.last_alert_at.isnot(None),
+            FbsOrder.last_alert_at >= since,
+        ).all()
+        return [_alert_dict(o, now) for o in candidates]

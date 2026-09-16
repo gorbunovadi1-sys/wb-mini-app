@@ -21,12 +21,19 @@ MARKETPLACE_BASE = "https://marketplace-api.wildberries.ru"
 STATS_BASE = "https://statistics-api.wildberries.ru"
 COMMON_BASE = "https://common-api.wildberries.ru"
 ANALYTICS_BASE = "https://seller-analytics-api.wildberries.ru"
+FEEDBACKS_BASE = "https://feedbacks-api.wildberries.ru"
 
 # Marketplace-API orders not yet confirmed by the seller sit in this
 # supplierStatus — the moment it moves on, the order has left "awaiting
 # assembly" (see _parse_order/is_pending_assembly below).
 PENDING_ASSEMBLY_STATUS = "new"
-CANCELLED_STATUSES = {"cancel", "declined_by_client"}
+SUPPLIER_CANCELLED_STATUSES = {"cancel", "declined_by_client"}
+# Verified live 2026-09-15: an order the customer cancels/declines BEFORE
+# the seller ever confirms it never leaves supplierStatus "new" — WB only
+# reflects that cancellation in wbStatus. Without checking this too, such
+# orders looked "pending assembly" forever and kept re-triggering the SLA
+# alert for weeks (real incident — see project memory).
+WB_CANCELLED_STATUSES = {"canceled", "canceled_by_client", "declined_by_client", "defect"}
 
 
 def _sanitize_key(raw: str) -> str:
@@ -57,12 +64,14 @@ class WBClient:
     def get_seller_info(self):
         return self._request("GET", f"{COMMON_BASE}/api/v1/seller-info")
 
-    def get_orders_since(self, date_from_iso: str, limit=1000) -> list:
-        """GET /api/v3/orders, cursor-paginated via `next`. `date_from_iso`:
-        'YYYY-MM-DD'. Returns every order (any status) created since then —
-        this is both the backfill and the ongoing sync source; combine with
-        get_order_statuses for actual status, which this endpoint doesn't carry."""
-        start_ts = int(datetime.datetime.strptime(date_from_iso, "%Y-%m-%d").timestamp())
+    def _get_orders_window(self, start_ts: int, limit=1000) -> list:
+        """One /api/v3/orders cursor-paginated pull from a single dateFrom
+        timestamp. Verified live 2026-09-15: this endpoint silently caps
+        results at ~29 days of span from dateFrom (not "dateFrom to now") —
+        a dateFrom 30+ days back came back truncated with no error, missing
+        everything past day 29, which meant the freshest orders (and their
+        current status) silently vanished from every sync — see
+        get_orders_since, which chunks around this cap."""
         orders = []
         next_cursor = 0
         while True:
@@ -74,6 +83,26 @@ class WBClient:
             if not batch or len(batch) < limit:
                 break
         return orders
+
+    def get_orders_since(self, date_from_iso: str, limit=1000) -> list:
+        """Returns every order (any status) created since `date_from_iso`
+        ('YYYY-MM-DD') — this is both the backfill and the ongoing sync
+        source; combine with get_order_statuses for actual status, which
+        this endpoint doesn't carry. Chunks into <=20-day windows to stay
+        well clear of WB's ~29-day-span cap on a single dateFrom (see
+        _get_orders_window) — otherwise a date_from more than ~29 days back
+        silently drops everything past that span, including today."""
+        start = datetime.datetime.strptime(date_from_iso, "%Y-%m-%d")
+        today = datetime.datetime.utcnow()
+        step = datetime.timedelta(days=20)
+
+        by_id = {}
+        window_start = start
+        while window_start <= today:
+            for o in self._get_orders_window(int(window_start.timestamp()), limit=limit):
+                by_id[o["id"]] = o
+            window_start += step
+        return list(by_id.values())
 
     def get_order_statuses(self, order_ids: list) -> dict:
         """POST /api/v3/orders/status, batched 1000/call. Returns
@@ -109,6 +138,37 @@ class WBClient:
         r.raise_for_status()
         return r.json()
 
+    def get_unanswered_reviews(self, take: int = 50) -> list:
+        """GET /api/v1/feedbacks?isAnswered=false — verified live 2026-09-15
+        against a real key (worked without a separate "Вопросы и отзывы"
+        token category — access already included). Returns raw feedback
+        objects: id, text, productValuation (1-5), productDetails.productName/
+        supplierArticle, userName, createdDate."""
+        skip, out = 0, []
+        while True:
+            data = self._request(
+                "GET", f"{FEEDBACKS_BASE}/api/v1/feedbacks",
+                params={"isAnswered": "false", "take": take, "skip": skip},
+            )
+            batch = data.get("data", {}).get("feedbacks", []) or []
+            out.extend(batch)
+            skip += take
+            if len(batch) < take:
+                break
+        return out
+
+    def post_review_answer(self, review_id: str, text: str):
+        """PATCH /api/v1/feedbacks — posts (or edits) the seller's public
+        reply to a review. NOT yet verified live — this is a real, public,
+        irreversible-ish action, so it was deliberately never test-fired;
+        first real call happens only when she approves a draft in the bot."""
+        r = requests.patch(
+            f"{FEEDBACKS_BASE}/api/v1/feedbacks",
+            headers=self.headers, json={"id": review_id, "text": text}, timeout=30,
+        )
+        r.raise_for_status()
+        return r.json()
+
     def get_sales_and_returns(self, date_from_iso: str, flag: int = 0) -> list:
         """GET /api/v1/supplier/sales — individual sale/return records.
         saleID starting with "R" is a return (WB's long-standing convention);
@@ -133,9 +193,9 @@ def parse_order(order: dict) -> dict:
     }
 
 
-def is_pending_assembly(supplier_status: str) -> bool:
-    return supplier_status == PENDING_ASSEMBLY_STATUS
+def is_cancelled(supplier_status: str, wb_status: str = None) -> bool:
+    return supplier_status in SUPPLIER_CANCELLED_STATUSES or wb_status in WB_CANCELLED_STATUSES
 
 
-def is_cancelled(supplier_status: str) -> bool:
-    return supplier_status in CANCELLED_STATUSES
+def is_pending_assembly(supplier_status: str, wb_status: str = None) -> bool:
+    return supplier_status == PENDING_ASSEMBLY_STATUS and not is_cancelled(supplier_status, wb_status)

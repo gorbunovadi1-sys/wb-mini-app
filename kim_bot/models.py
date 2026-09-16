@@ -1,6 +1,6 @@
 import datetime
 
-from sqlalchemy import Column, DateTime, Float, Integer, String, UniqueConstraint
+from sqlalchemy import Column, DateTime, Float, Integer, String, Text, UniqueConstraint
 
 from .db import Base
 
@@ -79,3 +79,23 @@ class DailyStockSnapshot(Base):
     snapshot_date = Column(String, nullable=False)  # YYYY-MM-DD
     balance = Column(Float, nullable=False)
     computed_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+class ReviewDraft(Base):
+    """One WB review with an AI-drafted reply awaiting her approval — never
+    posted to WB until she approves it in the bot (see project decision:
+    recommend+confirm, not autopost)."""
+    __tablename__ = "kim_review_draft"
+    __table_args__ = (UniqueConstraint("review_id", name="uq_kim_review_draft"),)
+
+    id = Column(Integer, primary_key=True)
+    review_id = Column(String, nullable=False)
+    article = Column(String, nullable=True)
+    product_name = Column(String, nullable=True)
+    rating = Column(Integer, nullable=True)
+    review_text = Column(Text, nullable=True)
+    author_name = Column(String, nullable=True)
+    draft_reply = Column(Text, nullable=True)
+    status = Column(String, nullable=False, default="pending")  # pending | approved | posted | skipped
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    decided_at = Column(DateTime, nullable=True)
