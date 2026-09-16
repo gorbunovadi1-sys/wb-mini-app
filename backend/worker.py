@@ -69,21 +69,29 @@ async def main():
     # Sequential, NOT asyncio.gather — found live (2026-09-14): the worker
     # was stuck in a tight crash-restart loop for ~24h straight after every
     # deploy, dying every ~30s during this exact startup kickoff, always
-    # right around cabinet 8 (26k+ postings, see project_large_cabinet_sync_
-    # stuck in session memory) — no Python traceback ever shown for the
-    # actual death (every real exception here is already caught and logged
-    # inside _refresh_wb_caches/_refresh_ozon_caches), consistent with an
-    # OOM kill: running WB's 52-report fetch and Ozon's largest cabinet's
-    # fetch fully concurrently, right at cold start, is exactly the peak
-    # memory moment. Because this crash-looped before the scheduler's
-    # 10-minute promo-check job ever got a single chance to fire, it also
-    # silently broke promo auto-removal for every cabinet, not just this
-    # one — not a logic bug in ozon_promo_guard, the whole process was never
-    # up long enough to run it once. Sequential halves peak memory here at
-    # the cost of a slightly slower first-pass refresh after each deploy.
-    await _refresh_wb_caches(skip_if_fresh=True)
+    # right around cabinet 8 (26k+ postings) — no Python traceback ever
+    # shown for the actual death, consistent with an OOM kill from running
+    # WB's report fetch and Ozon's largest cabinet's fetch fully
+    # concurrently right at cold start. Sequential halved peak memory here.
+    #
+    # WB is skipped at kickoff entirely (2026-09-16) — it kept crash-looping
+    # again even sequential. Unlike Ozon's cache (hot-window + backfill
+    # chunks, bounded per cycle, see ozon_sales_cache.refresh), WB's own
+    # cache refresh is all-or-nothing: one throttled call per report chunk
+    # (WB's finance API is hard-limited to 1/min — see margin.fetch_rows),
+    # routinely 50+ chunks for a real cabinet, so one full attempt can run
+    # to an hour and a single failure anywhere in it loses the whole run's
+    # progress, nothing partial gets saved. Running that on every automatic
+    # restart meant a crash-looping worker (WB ConnectionReset errors,
+    # 2026-09-15/16, cabinet 7 needing 54 chunks) kept retrying the exact
+    # same expensive fetch from scratch every ~10 minutes, never giving the
+    # rest of the worker (акции/маржа/габариты) a stable window to run at
+    # all. WB's cache still refreshes on its own 3h interval below — this
+    # only removes it from the kickoff path that reruns on every restart.
+    # A real fix (an incremental design for WB like Ozon's) is a separate,
+    # bigger task — this just stops the crash loop.
     await _refresh_ozon_caches(skip_if_fresh=True)
-    log.info("Initial WB+Ozon sales cache refresh done")
+    log.info("Initial Ozon sales cache refresh done (WB skipped at kickoff — refreshes on its own 3h interval instead)")
 
     await asyncio.Event().wait()  # run forever — the scheduler does its work on its own tasks
 
