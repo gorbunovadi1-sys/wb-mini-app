@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Сельдереева — Дашборд</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{
+  color-scheme: light;
+  --plane:#f6f6f8; --surface:#ffffff; --ink:#0c0c10; --ink2:#5b5b66; --muted:#96969f;
+  --hair:#e7e7ec; --accent:#2f6bed; --accent-soft:#eaf0fe;
+  --good:#0ca30c; --warn:#fab219; --crit:#d03b3b; --good-text:#006300; --crit-text:#a52626;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,Arial,sans-serif;
+  --shadow:0 1px 2px rgba(16,17,26,.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --plane:#0d0d10; --surface:#17171b; --ink:#f4f4f7; --ink2:#b6b6c0; --muted:#8a8a95;
+    --hair:#26262c; --accent:#5b8dfa; --accent-soft:#1a2540;
+    --good-text:#3ec13e; --crit-text:#e66767;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --plane:#0d0d10; --surface:#17171b; --ink:#f4f4f7; --ink2:#b6b6c0; --muted:#8a8a95;
+  --hair:#26262c; --accent:#5b8dfa; --accent-soft:#1a2540;
+  --good-text:#3ec13e; --crit-text:#e66767;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--plane);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.45}
+.page{max-width:900px;margin:0 auto;padding:16px 14px 60px;display:flex;flex-direction:column;gap:14px}
+h1{margin:0;font-size:20px;font-weight:600}
+.muted{color:var(--muted)}
+.tabs{display:flex;gap:6px;background:var(--surface);border:1px solid var(--hair);border-radius:10px;padding:3px}
+.tabs button{flex:1;appearance:none;border:0;background:transparent;font:inherit;font-size:13px;color:var(--ink2);
+  padding:9px 6px;border-radius:8px;cursor:pointer}
+.tabs button[aria-selected="true"]{background:var(--accent);color:#fff;font-weight:500}
+.card{background:var(--surface);border:1px solid var(--hair);border-radius:13px;padding:16px;box-shadow:var(--shadow)}
+.kpis{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.kpi .lab{font-size:12px;color:var(--ink2)}
+.kpi .val{font-size:22px;font-weight:600;margin-top:4px}
+.kpi .val.pos{color:var(--good-text)} .kpi .val.neg{color:var(--crit-text)}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--hair)}
+th{font-size:11px;color:var(--muted);text-transform:uppercase;font-weight:600}
+tr.clickable{cursor:pointer} tr.clickable:hover{background:var(--accent-soft)}
+.badge{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11.5px;font-weight:500}
+.badge.zero_clicks,.badge.zero_orders{background:#fbe3e3;color:var(--crit-text)}
+.badge.scale{background:#e2f7e2;color:var(--good-text)}
+.badge.check{background:#fff3da;color:#8a5a00}
+.badge.normal,.badge.low_data{background:var(--hair);color:var(--ink2)}
+.btn{appearance:none;font:inherit;font-size:12.5px;background:var(--surface);color:var(--ink);
+  border:1px solid var(--hair);border-radius:8px;padding:6px 12px;cursor:pointer}
+.btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn.danger{background:var(--crit);color:#fff;border-color:var(--crit)}
+.row{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px}
+.loading{color:var(--muted);padding:20px;text-align:center}
+.dialog-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;z-index:50}
+.dialog{background:var(--surface);border-radius:13px;padding:20px;max-width:340px;width:90%}
+.dialog p{margin:0 0 16px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Сельдереева</h1>
+  <div class="tabs" role="tablist">
+    <button data-tab="finance" aria-selected="true">Финансы</button>
+    <button data-tab="ads" aria-selected="false">Реклама</button>
+  </div>
+
+  <div id="tab-finance">
+    <div class="card">
+      <div class="kpis" id="finance-kpis"><div class="loading">Загрузка…</div></div>
+    </div>
+  </div>
+
+  <div id="tab-ads" hidden>
+    <div class="card">
+      <div id="ads-summary"><div class="loading">Загрузка…</div></div>
+    </div>
+    <div class="card" id="clusters-card" hidden style="margin-top:14px">
+      <div id="clusters-body"></div>
+    </div>
+  </div>
+</div>
+
+<div class="dialog-backdrop" id="confirm-backdrop" hidden>
+  <div class="dialog">
+    <p id="confirm-text"></p>
+    <div class="row">
+      <button class="btn" id="confirm-cancel">Отмена</button>
+      <button class="btn primary" id="confirm-ok">Подтвердить</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+function fmtRub(v) { return Math.round(v).toLocaleString('ru-RU') + ' ₽'; }
+
+async function api(path, opts) {
+  opts = opts || {};
+  const headers = Object.assign({'Content-Type': 'application/json'}, opts.headers || {});
+  if (tg && tg.initData) headers['X-Telegram-Init-Data'] = tg.initData;
+  const res = await fetch(path, Object.assign({}, opts, {headers}));
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.detail || res.statusText);
+  }
+  return res.json();
+}
+
+// --- tabs ---
+document.querySelectorAll('.tabs button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', 'false'));
+    btn.setAttribute('aria-selected', 'true');
+    document.getElementById('tab-finance').hidden = btn.dataset.tab !== 'finance';
+    document.getElementById('tab-ads').hidden = btn.dataset.tab !== 'ads';
+  });
+});
+
+// --- finance ---
+async function loadFinance() {
+  const el = document.getElementById('finance-kpis');
+  try {
+    const s = await api('/api/seldereeva/finance?marketplace=wb&days=30');
+    const acc = s.account;
+    el.innerHTML = `
+      <div class="kpi"><div class="lab">Выручка (30 дн.)</div><div class="val">${fmtRub(acc.revenue)}</div></div>
+      <div class="kpi"><div class="lab">Прибыль</div><div class="val ${acc.profit >= 0 ? 'pos' : 'neg'}">${fmtRub(acc.profit)}</div></div>
+      <div class="kpi"><div class="lab">Маржа</div><div class="val">${acc.margin_percent.toFixed(1)}%</div></div>
+      <div class="kpi"><div class="lab">Расход на рекламу</div><div class="val">${fmtRub(acc.ad_spend)}</div></div>
+    `;
+  } catch (e) {
+    el.innerHTML = `<div class="muted">Не удалось загрузить: ${e.message}</div>`;
+  }
+}
+
+// --- ads ---
+async function loadAds() {
+  const el = document.getElementById('ads-summary');
+  try {
+    const s = await api('/api/seldereeva/ads?days=30');
+    const rows = s.campaigns.map(c => `
+      <tr class="clickable" data-id="${c.id}">
+        <td>${c.name}</td><td>${fmtRub(c.spend)}</td>
+        <td>${c.drr !== null ? c.drr.toFixed(1) + '%' : '—'}</td><td>${c.orders}</td>
+      </tr>`).join('');
+    el.innerHTML = `
+      <div class="kpis" style="margin-bottom:14px">
+        <div class="kpi"><div class="lab">Расход (30 дн.)</div><div class="val">${fmtRub(s.totals.spend)}</div></div>
+        <div class="kpi"><div class="lab">ДРР</div><div class="val">${s.totals.drr !== null ? s.totals.drr.toFixed(1) + '%' : '—'}</div></div>
+      </div>
+      <table><thead><tr><th>Кампания</th><th>Расход</th><th>ДРР</th><th>Заказы</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="4" class="muted">Активных кампаний нет</td></tr>'}</tbody></table>
+    `;
+    el.querySelectorAll('tr[data-id]').forEach(tr => tr.addEventListener('click', () => loadClusters(tr.dataset.id)));
+  } catch (e) {
+    el.innerHTML = `<div class="muted">Не удалось загрузить: ${e.message}</div>`;
+  }
+}
+
+async function loadClusters(advertId) {
+  const card = document.getElementById('clusters-card');
+  const body = document.getElementById('clusters-body');
+  card.hidden = false;
+  body.innerHTML = '<div class="loading">Загрузка кластеров…</div>';
+  try {
+    const s = await api(`/api/seldereeva/ads/${advertId}/clusters?days=30`);
+    const rows = s.clusters.map(c => `
+      <tr>
+        <td>${c.norm_query}</td><td>${fmtRub(c.spend)}</td><td>${c.clicks}</td><td>${c.orders}</td>
+        <td><span class="badge ${c.verdict}">${c.verdict_label}</span></td>
+        <td>${['zero_clicks','zero_orders'].includes(c.verdict)
+          ? `<button class="btn danger" data-nq="${c.norm_query}">Зачистить</button>` : ''}</td>
+      </tr>`).join('');
+    body.innerHTML = `
+      <p class="muted">Кампания ${advertId} — ${s.summary.clean_count} кластеров под зачистку (${fmtRub(s.summary.clean_spend)})</p>
+      <table><thead><tr><th>Фраза</th><th>Расход</th><th>Клики</th><th>Заказы</th><th>Вердикт</th><th></th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="6" class="muted">Нет данных</td></tr>'}</tbody></table>
+    `;
+    body.querySelectorAll('button[data-nq]').forEach(btn =>
+      btn.addEventListener('click', () => requestExclude(advertId, btn.dataset.nq)));
+  } catch (e) {
+    body.innerHTML = `<div class="muted">Не удалось загрузить: ${e.message}</div>`;
+  }
+}
+
+// --- confirm-before-execute ---
+function showConfirm(text, onConfirm) {
+  const backdrop = document.getElementById('confirm-backdrop');
+  document.getElementById('confirm-text').textContent = text;
+  backdrop.hidden = false;
+  const ok = document.getElementById('confirm-ok');
+  const cancel = document.getElementById('confirm-cancel');
+  const close = () => { backdrop.hidden = true; ok.onclick = null; cancel.onclick = null; };
+  ok.onclick = async () => { close(); await onConfirm(); };
+  cancel.onclick = close;
+}
+
+async function requestExclude(advertId, normQuery) {
+  try {
+    const res = await api(`/api/seldereeva/ads/${advertId}/exclude-phrase`, {
+      method: 'POST', body: JSON.stringify({norm_query: normQuery}),
+    });
+    showConfirm(`Исключить фразу «${normQuery}» из кампании ${advertId}?`, async () => {
+      await api(`/api/seldereeva/actions/${res.action_id}/confirm`, {method: 'POST'});
+      loadClusters(advertId);
+    });
+  } catch (e) {
+    alert('Ошибка: ' + e.message);
+  }
+}
+
+loadFinance();
+loadAds();
+</script>
+</body>
+</html>

@@ -372,6 +372,8 @@ main { padding: 16px; display: flex; flex-direction: column; gap: 14px; max-widt
   </div>
   <nav id="viewNav">
     <button data-view="dashboard" class="active">Дашборд</button>
+    <button data-view="combined">Управленческий отчёт</button>
+    <button data-view="daily">P&amp;L по дням</button>
     <button data-view="analytics">Аналитика</button>
     <button data-view="detail">Детализация</button>
     <button data-view="pricing">Цены</button>
@@ -526,7 +528,7 @@ let pricingItems = null;
 let pendingPriceChanges = {}; // offer_id -> price
 let stockItems = null;
 
-const VIEW_TITLES = { dashboard: 'Дашборд', analytics: 'Аналитика', detail: 'Детализация', pricing: 'Цены', stock: 'Остатки', actions: 'Акции', ads: 'Реклама', settings: 'Настройки' };
+const VIEW_TITLES = { dashboard: 'Дашборд', combined: 'Управленческий отчёт', daily: 'P&L по дням', analytics: 'Аналитика', detail: 'Детализация', pricing: 'Цены', stock: 'Остатки', actions: 'Акции', ads: 'Реклама', settings: 'Настройки' };
 
 async function boot() {
   renderThemeSwatches();
@@ -564,6 +566,8 @@ async function boot() {
   document.getElementById('pushBarBtn').addEventListener('click', pushPriceUpdates);
 
   if (cabinetsList.length) {
+    const combinedBtn = document.querySelector('#viewNav button[data-view="combined"]');
+    if (combinedBtn) combinedBtn.hidden = cabinetsList.length < 2;
     activeMarketplace = cabinetsList[0].marketplace;
     renderMarketplaceToggle();
     selectFirstCabinetInMarketplace();
@@ -634,6 +638,8 @@ function loadView() {
     return;
   }
   if (activeView === 'dashboard') return loadDashboard();
+  if (activeView === 'combined') return loadCombined();
+  if (activeView === 'daily') return loadDaily();
   if (activeView === 'analytics') return loadAnalytics();
   if (activeView === 'detail') return loadDetail();
   if (activeView === 'pricing') return loadPricing();
@@ -729,6 +735,8 @@ function renderDashboard(data, cabinet) {
     { label: 'Сборы по товарам', value: fmtMoney(acc.item_fees || 0), sub: 'мелкие пооперационные сборы Ozon за штуку' },
     { label: 'Прочие расходы площадки', value: fmtMoney(acc.other_fees || 0), sub: 'эквайринг, упаковка, хранение — не привязаны к одному товару' },
     { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent, sub: 'чистая прибыль ÷ выкуплено' },
+    { label: 'ROI', value: acc.roi_percent === null || acc.roi_percent === undefined ? '—' : acc.roi_percent.toFixed(1) + '%', sub: 'прибыль ÷ себестоимость' },
+    { label: 'Средний чек', value: fmtMoney(acc.avg_check || 0), sub: 'выкуплено ÷ количество' },
     { label: 'К перечислению от Ozon', value: fmtMoney(acc.payout_real || 0), sub: 'выкуплено плюс бонус минус комиссия, логистика и сборы Ozon — сколько денег реально придёт от площадки. Может быть временно завышено на несколько %: сборы Ozon (эквайринг и т.п.) иногда доходят с задержкой до 1–2 недель, а логистика здесь чуть шире, чем в «Юнит-экономике» — включает и заказы, отменённые уже после отгрузки. Точное сравнение — переключатель «как у Ozon» ниже' },
     { label: 'Чистая прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit, sub: 'к перечислению минус твоя себестоимость и налог — то, что остаётся тебе' },
   ]) : [
@@ -736,6 +744,9 @@ function renderDashboard(data, cabinet) {
     { label: 'Прибыль', value: fmtMoney(acc.profit), cmp: cmp.profit },
     { label: 'Реклама', value: fmtMoney(acc.ad_spend || 0) },
     { label: 'Маржа', value: acc.margin_percent.toFixed(1) + '%', cmp: cmp.margin_percent },
+    { label: 'ROI', value: acc.roi_percent === null || acc.roi_percent === undefined ? '—' : acc.roi_percent.toFixed(1) + '%', sub: 'прибыль ÷ себестоимость' },
+    { label: 'Средний чек', value: fmtMoney(acc.avg_check || 0), sub: 'выручка ÷ количество' },
+    { label: 'Возвраты', value: fmtMoney(acc.returns_revenue || 0), sub: `${fmtNum(acc.returns_qty || 0)} шт. за период` },
   ];
 
   const daily = data.daily || [];
@@ -883,7 +894,7 @@ function productCardHtml(p, maxAbsProfit) {
     </div>
     <div class="copy-chip" data-copy="${itemKey}">${itemKey}</div>
     <div class="product-bar-track"><div class="product-bar-fill ${neg ? 'neg' : ''}" style="width:${barWidth}%"></div></div>
-    <div class="product-meta"><span>выручка ${fmtMoney(p.revenue)} · ${p.qty} шт.</span><span>маржа ${p.margin_percent.toFixed(1)}%</span></div>
+    <div class="product-meta"><span>выручка ${fmtMoney(p.revenue)} · ${p.qty} шт.</span><span>маржа ${p.margin_percent.toFixed(1)}%${p.roi_percent !== null && p.roi_percent !== undefined ? ` · ROI ${p.roi_percent.toFixed(1)}%` : ''}</span></div>
     <div class="expense-breakdown">
       <div class="expense-toggle"><span>Расходы и доходы</span><span class="expense-chevron">▾</span></div>
       <div class="expense-summary">
@@ -934,6 +945,164 @@ function bindCogsHandlers(root, onSaved) {
       }
     });
   });
+}
+
+// ==================== P&L по дням ====================
+
+async function loadDaily() {
+  const el = document.getElementById('content');
+  const reqView = activeView, reqCabinet = activeCabinetId;
+  el.innerHTML = '<div class="state-msg">Загрузка данных…</div>';
+  try {
+    const data = await apiFetch(`/api/cabinets/${activeCabinetId}/margin?date_from=${periodFrom}&date_to=${periodTo}`);
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
+    lastMarginData = data;
+    renderDaily(data);
+  } catch (e) {
+    if (activeView !== reqView || activeCabinetId !== reqCabinet) return;
+    el.innerHTML = `<div class="state-msg">Не удалось загрузить данные.<br>${e.message}</div>`;
+  }
+}
+
+function renderDaily(data) {
+  const el = document.getElementById('content');
+  const daily = data.daily || [];
+  const lossDays = daily.filter(d => d.profit_est < 0).length;
+  el.innerHTML = `
+    <div class="notice" style="margin-bottom:2px">За период ${data.period_from} — ${data.period_to}${lossDays ? ` · убыточных дней: ${lossDays}` : ''} — прибыль по дням оценочная: себестоимость/реклама/налог распределены по дням пропорционально дневной выручке (площадка не даёт эти данные по дням напрямую), это прикидка, а не точный источник</div>
+    <div class="card">
+      <h3>Прибыль по дням</h3>
+      ${daily.length ? `<canvas id="dailyProfitChart"></canvas>` : '<div class="state-msg">Нет данных за период</div>'}
+    </div>
+    ${daily.length ? `
+    <div class="card">
+      <h3>По дням</h3>
+      <div class="product-list">
+        ${daily.slice().reverse().map(d => `
+          <div class="expense-row" style="${d.profit_est < 0 ? 'border-left:2px solid var(--negative);padding-left:6px' : ''}">
+            <span>${d.date}</span>
+            <span class="${d.profit_est < 0 ? 'eb-neg' : ''}">${fmtMoney(d.profit_est)}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>` : ''}
+  `;
+  if (daily.length) {
+    new Chart(document.getElementById('dailyProfitChart'), {
+      type: 'bar',
+      data: {
+        labels: daily.map(d => d.date.slice(5)),
+        datasets: [{
+          data: daily.map(d => d.profit_est),
+          backgroundColor: daily.map(d => d.profit_est < 0 ? cssVarAlpha('--negative', 0.7) : cssVarAlpha('--positive', 0.55)),
+        }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: c => fmtMoney(c.parsed.y) } },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: cssVar('--text-secondary'), maxTicksLimit: 8, font: { size: 10 } } },
+          y: { grid: { color: cssVar('--border') }, ticks: { color: cssVar('--text-secondary'), font: { size: 10 }, callback: v => (v/1000) + 'k' } },
+        },
+      },
+    });
+  }
+}
+
+// ==================== Управленческий отчёт (WB + Ozon) ====================
+
+let combinedSelectedIds = null; // Set of cabinet ids, null until first render (defaults to all)
+
+async function loadCombined() {
+  const el = document.getElementById('content');
+  if (combinedSelectedIds === null) {
+    combinedSelectedIds = new Set(cabinetsList.map(c => c.id));
+  }
+  renderCombinedPicker();
+  await fetchAndRenderCombined();
+}
+
+function renderCombinedPicker() {
+  const el = document.getElementById('content');
+  const ids = [...combinedSelectedIds];
+  el.innerHTML = `
+    <div class="card">
+      <h3>Кабинеты в отчёте</h3>
+      <div class="product-list">
+        ${cabinetsList.map(c => `
+          <label class="expense-row" style="cursor:pointer">
+            <span><input type="checkbox" data-cabinet-id="${c.id}" ${combinedSelectedIds.has(c.id) ? 'checked' : ''}> ${c.display_name || c.marketplace} <span style="color:var(--text-secondary)">(${c.marketplace === 'wb' ? 'WB' : 'Ozon'})</span></span>
+          </label>
+        `).join('')}
+      </div>
+    </div>
+    <div id="combinedReportBody"><div class="state-msg">Загрузка данных…</div></div>
+  `;
+  el.querySelectorAll('input[data-cabinet-id]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const id = parseInt(cb.dataset.cabinetId, 10);
+      if (cb.checked) combinedSelectedIds.add(id); else combinedSelectedIds.delete(id);
+      fetchAndRenderCombined();
+    });
+  });
+}
+
+async function fetchAndRenderCombined() {
+  const body = document.getElementById('combinedReportBody');
+  if (!body) return;
+  const reqView = activeView;
+  const ids = [...combinedSelectedIds];
+  if (!ids.length) { body.innerHTML = '<div class="state-msg">Выберите хотя бы один кабинет</div>'; return; }
+  body.innerHTML = '<div class="state-msg">Загрузка данных… (может занять до минуты)</div>';
+  try {
+    const data = await apiFetch(`/api/me/combined-report?cabinet_ids=${ids.join(',')}&date_from=${periodFrom}&date_to=${periodTo}`);
+    if (activeView !== reqView) return;
+    renderCombinedReport(data);
+  } catch (e) {
+    if (activeView !== reqView) return;
+    body.innerHTML = `<div class="state-msg">Не удалось загрузить отчёт.<br>${e.message}</div>`;
+  }
+}
+
+function renderCombinedReport(data) {
+  const body = document.getElementById('combinedReportBody');
+  const acc = data.account;
+  const rows = [
+    ['Оборот', 'revenue'], ['Себестоимость', 'cogs_total'], ['Налоги', 'tax'],
+    ['Реклама', 'ad_spend'], ['Чистая прибыль', 'profit'],
+  ];
+  body.innerHTML = `
+    <div class="notice" style="margin-bottom:2px">За период ${data.period_from} — ${data.period_to}. Налоги/реклама суммируются только там, где площадка их считает (у Ozon сейчас нет отдельной рекламы в этом отчёте, у WB — отдельного налога)</div>
+    <div class="kpi-grid">
+      <div class="kpi-card"><div class="k">Оборот</div><div class="v">${fmtMoney(acc.revenue)}</div></div>
+      <div class="kpi-card"><div class="k">Чистая прибыль</div><div class="v">${fmtMoney(acc.profit)}</div></div>
+      <div class="kpi-card"><div class="k">Маржа</div><div class="v">${acc.margin_percent.toFixed(1)}%</div></div>
+    </div>
+    <div class="card">
+      <h3>По кабинетам</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr>
+            <th style="text-align:left;padding:6px 4px;color:var(--text-secondary);font-weight:500"></th>
+            ${data.cabinets.map(c => `<th style="text-align:right;padding:6px 4px;color:var(--text-secondary);font-weight:500">${c.display_name || c.marketplace}</th>`).join('')}
+            <th style="text-align:right;padding:6px 4px;color:var(--text-secondary);font-weight:500">Вместе</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(([label, key]) => `
+            <tr style="border-top:1px solid var(--border)">
+              <td style="padding:6px 4px">${label}</td>
+              ${data.cabinets.map(c => `<td style="text-align:right;padding:6px 4px">${fmtMoney(c.account[key] || 0)}</td>`).join('')}
+              <td style="text-align:right;padding:6px 4px"><b>${fmtMoney(acc[key] || 0)}</b></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 // ==================== Аналитика продаж ====================

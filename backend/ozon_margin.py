@@ -536,10 +536,6 @@ def build_margin_summary(
         oa["item_fees"] += a["item_fees"]
         oa["bonus"] += a.get("bonus", 0.0)
 
-    daily_series = [
-        {"date": d, "revenue": round(v["revenue"], 2), "qty": v["qty"]}
-        for d, v in sorted(daily.items())
-    ]
     buyout_rate = round(totals_buyouts["qty"] / totals_orders["qty"] * 100, 1) if totals_orders["qty"] else None
 
     cost_prices = cost_prices if cost_prices is not None else load_cost_prices()
@@ -576,6 +572,7 @@ def build_margin_summary(
         tax = revenue * (tax_pct / 100)
         profit = revenue + bonus - commission - delivery - item_fees - cogs_total - tax
         margin_pct = (profit / revenue * 100) if revenue else 0.0
+        roi_pct = (profit / cogs_total * 100) if cogs_total else None
         products.append({
             "offer_id": offer_id,
             "title": p.get("name") or offer_id,
@@ -590,6 +587,7 @@ def build_margin_summary(
             "tax": round(tax, 2),
             "profit": round(profit, 2),
             "margin_percent": round(margin_pct, 2),
+            "roi_percent": round(roi_pct, 2) if roi_pct is not None else None,
             "has_cost_price": offer_id in cost_prices,
         })
     products.sort(key=lambda x: -x["revenue"])
@@ -628,6 +626,23 @@ def build_margin_summary(
     # ratio applied to previous revenue, same approach as cost prices below.
     cost_ratio = (total_revenue - total_profit) / total_revenue if total_revenue else 0.0
     prev_profit_approx = prev_revenue * (1 - cost_ratio)
+
+    # profit_est/cogs_est/tax_est allocate the period's totals across days by
+    # each day's share of period revenue (`daily`, from postings, is the only
+    # day-resolved series Ozon gives us — commission/delivery/item_fees/cogs
+    # all come from accrual, which isn't itemized per day) — an estimate for
+    # the "P&L по дням" chart, not a source-of-truth figure. tax_est is exact
+    # (tax_pct applies to revenue directly); cogs_est/profit_est reuse the
+    # same ratio approximation already trusted above for prev_profit_approx.
+    daily_series = []
+    for d, v in sorted(daily.items()):
+        cogs_est = round((total_cogs / total_revenue) * v["revenue"], 2) if total_revenue else 0.0
+        tax_est = round(v["revenue"] * (tax_pct / 100), 2)
+        profit_est = round(v["revenue"] * (1 - cost_ratio), 2) if total_revenue else 0.0
+        daily_series.append({
+            "date": d, "revenue": round(v["revenue"], 2), "qty": v["qty"],
+            "cogs_est": cogs_est, "tax_est": tax_est, "profit_est": profit_est,
+        })
 
     def _delta(cur, prev):
         diff = cur - prev
@@ -669,6 +684,8 @@ def build_margin_summary(
             "payout_real": round(total_payout_real, 2),
             "profit": round(total_profit, 2),
             "margin_percent": round(total_margin_pct, 2),
+            "roi_percent": round(total_profit / total_cogs * 100, 2) if total_cogs else None,
+            "avg_check": round(total_revenue / totals_buyouts["qty"], 2) if totals_buyouts["qty"] else 0.0,
             "cost_prices_known_for": sum(1 for pr in products if pr["has_cost_price"]),
             "cost_prices_total_products": len(products),
             "qty_total": totals_buyouts["qty"],

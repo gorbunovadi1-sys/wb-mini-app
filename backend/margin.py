@@ -43,15 +43,21 @@ def _accumulate(bucket, row):
         bucket["qty"] += int(row.get("quantity") or 0)
 
 
-def fetch_rows(client, fetch_from: datetime.date, d_to: datetime.date) -> list:
+def fetch_rows(client, fetch_from: datetime.date, d_to: datetime.date, period: str = "weekly") -> list:
     """The slow part: pulls raw sales-report detail rows from WB's
     finance-api, which is hard-throttled to 1 request/minute per account —
     a 30-day window alone can mean 15-20+ *report* chunks, each needing at
     least one throttled call (more if a report paginates). Callers should
     cache this and re-aggregate locally instead of calling it per request —
-    see wb_sales_cache.py."""
+    see wb_sales_cache.py.
+
+    `period="daily"` (WB also supports this, confirmed live 2026-09-18)
+    returns one narrow report per day instead of one per week — for a
+    short window (e.g. "yesterday", 1-2 days) this means 1-2 throttled
+    report-detail calls instead of however many weekly reports overlap
+    the range, which is the difference between ~1 minute and ~10+."""
     log.info("Fetching sales report list...")
-    reports = client.get_sales_reports(fetch_from.isoformat(), d_to.isoformat(), period="weekly")
+    reports = client.get_sales_reports(fetch_from.isoformat(), d_to.isoformat(), period=period)
     report_ids = sorted({r["reportId"] for r in reports})
     log.info(f"{len(report_ids)} reports to pull detail for")
 
@@ -64,7 +70,7 @@ def fetch_rows(client, fetch_from: datetime.date, d_to: datetime.date) -> list:
 
 def build_margin_summary(
     client=None, cost_prices=None, days: int = 30, date_from: str = None, date_to: str = None,
-    rows: list = None, rows_cover_from: str = None,
+    rows: list = None, rows_cover_from: str = None, period: str = "weekly",
 ) -> dict:
     """`days` back from today, or an explicit [date_from, date_to] range —
     same calling convention as ozon_margin.build_margin_summary.
@@ -73,7 +79,11 @@ def build_margin_summary(
     from a cache) covering back to at least `rows_cover_from` (ISO date) to
     skip the slow WB fetch entirely and just re-aggregate in memory. If the
     requested window needs data older than that, this falls back to a live
-    fetch via `client` — same as when `rows` isn't passed at all."""
+    fetch via `client` — same as when `rows` isn't passed at all.
+
+    `period`: passed straight through to fetch_rows — "daily" for short
+    explicit ranges (a single day, say), "weekly" (default) otherwise. Only
+    matters for the live-fetch path; ignored when `rows` is used."""
     client = client or wb_client.default_client
     if date_from and date_to:
         cutoff = datetime.date.fromisoformat(date_from)
@@ -87,13 +97,20 @@ def build_margin_summary(
     if rows is not None and rows_cover_from and datetime.date.fromisoformat(rows_cover_from) <= fetch_from:
         all_rows = rows
     else:
-        all_rows = fetch_rows(client, fetch_from, d_to)
+        all_rows = fetch_rows(client, fetch_from, d_to, period=period)
 
     per_nm = collections.defaultdict(lambda: {
         **_empty_bucket(), "title": "", "vendor_code": "", "brand": "",
     })
     prev_totals = _empty_bucket()
     daily = collections.defaultdict(lambda: {"revenue": 0.0, "forpay": 0.0, "qty": 0})
+    # docTypeName == "Возврат" rows never contribute to revenue/qty above (see
+    # _accumulate) — they're display-only here (parity with Ozon's
+    # cancelled_qty/cancelled_revenue), not netted against anything, since a
+    # return's own "Продажа" row was simply never counted in the first place.
+    # Unverified against a live report — confirm docTypeName's exact return
+    # label before trusting this number in production.
+    returns_totals = {"revenue": 0.0, "qty": 0}
     # Per-product-per-day revenue — powers the "Артикулы × дни" heatmap on
     # Аналитика. Cheap to collect here since this loop already visits every
     # row once; nothing else in this module needed the cross before.
@@ -125,6 +142,9 @@ def build_margin_summary(
             if row.get("docTypeName") == "Продажа":
                 d["revenue"] += _num(row, "retailAmount")
                 d["qty"] += int(row.get("quantity") or 0)
+            elif row.get("docTypeName") == "Возврат":
+                returns_totals["revenue"] += abs(_num(row, "retailAmount"))
+                returns_totals["qty"] += int(row.get("quantity") or 0)
         else:
             _accumulate(prev_totals, row)
 
@@ -149,6 +169,7 @@ def build_margin_summary(
         cogs_total = cogs_unit * p["qty"]
         profit = p["forpay"] - ad_share - cogs_total
         margin_pct = (profit / p["revenue"] * 100) if p["revenue"] else 0.0
+        roi_pct = (profit / cogs_total * 100) if cogs_total else None
         products.append({
             "nm_id": nm,
             "title": p["title"] or p["vendor_code"] or str(nm),
@@ -166,6 +187,7 @@ def build_margin_summary(
             "cogs_total": round(cogs_total, 2),
             "profit": round(profit, 2),
             "margin_percent": round(margin_pct, 2),
+            "roi_percent": round(roi_pct, 2) if roi_pct is not None else None,
             "has_cost_price": str(nm) in cost_prices,
         })
 
@@ -184,10 +206,22 @@ def build_margin_summary(
     prev_cogs_approx = cogs_ratio * prev_revenue
     prev_profit_approx = prev_forpay - prev_ad_spend - prev_cogs_approx
 
-    daily_series = [
-        {"date": d, "revenue": round(v["revenue"], 2), "forpay": round(v["forpay"], 2), "qty": v["qty"]}
-        for d, v in sorted(daily.items())
-    ]
+    # profit_est/cogs_est/ad_spend_est allocate the period's total cogs/ad
+    # spend across days by each day's share of period revenue — WB doesn't
+    # give a per-day-per-SKU quantity or per-day ad spend, so a real per-day
+    # profit isn't derivable; this is an estimate for the "P&L по дням" chart,
+    # not a source-of-truth figure (see cogs_ratio above, same approximation
+    # already used for prev_profit_approx).
+    daily_series = []
+    for d, v in sorted(daily.items()):
+        rev_share = (v["revenue"] / total_revenue) if total_revenue else 0.0
+        cogs_est = round(cogs_ratio * v["revenue"], 2)
+        ad_spend_est = round(rev_share * total_ad_spend, 2)
+        profit_est = round(v["forpay"] - ad_spend_est - cogs_est, 2)
+        daily_series.append({
+            "date": d, "revenue": round(v["revenue"], 2), "forpay": round(v["forpay"], 2), "qty": v["qty"],
+            "cogs_est": cogs_est, "ad_spend_est": ad_spend_est, "profit_est": profit_est,
+        })
 
     def _delta(cur, prev):
         diff = cur - prev
@@ -210,9 +244,13 @@ def build_margin_summary(
             "cogs_total": round(total_cogs, 2),
             "profit": round(total_profit, 2),
             "margin_percent": round(total_margin_pct, 2),
+            "roi_percent": round(total_profit / total_cogs * 100, 2) if total_cogs else None,
+            "avg_check": round(total_revenue / sum(p["qty"] for p in per_nm.values()), 2) if sum(p["qty"] for p in per_nm.values()) else 0.0,
             "cost_prices_known_for": sum(1 for pr in products if pr["has_cost_price"]),
             "cost_prices_total_products": len(products),
             "qty_total": sum(p["qty"] for p in per_nm.values()),
+            "returns_qty": returns_totals["qty"],
+            "returns_revenue": round(returns_totals["revenue"], 2),
         },
         "compare": {
             "revenue": _delta(total_revenue, prev_revenue),

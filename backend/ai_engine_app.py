@@ -22,6 +22,7 @@ from . import ozon_promotions
 from . import ozon_promotions_detail
 from . import ozon_sales_cache
 from . import ozon_stock
+from . import seldereeva_routes
 from . import wb_ads
 from . import wb_prices
 from . import wb_sales_cache
@@ -38,8 +39,11 @@ log = logging.getLogger("ai_engine_app")
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend_engine")
 DEV_MODE = os.environ.get("DEV_MODE", "1") == "1"  # skips Telegram signature check when set
 
+SELDEREEVA_FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend_seldereeva")
+
 app = FastAPI(title="ИИ Движок API")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.include_router(seldereeva_routes.router)
 
 
 @app.on_event("startup")
@@ -47,7 +51,18 @@ async def on_startup():
     init_db()
 
     ai_engine_token = os.environ.get("AI_ENGINE_BOT_TOKEN")
-    if ai_engine_token:
+    if ai_engine_token and DEV_MODE:
+        # DEV_MODE's .env carries the SAME token as the production bot (no
+        # separate test bot exists) — starting polling here fights prod over
+        # Telegram's getUpdates (only one long-poll consumer per token is
+        # allowed), throwing TelegramConflictError on both sides and risking
+        # real users' bot going unresponsive while they fight over it.
+        # Confirmed live 2026-09-16: a local `uvicorn ai_engine_app:app` run
+        # immediately triggered sustained Conflict errors against prod.
+        # Local Mini App testing already works via ?telegram_id=, which
+        # doesn't need the bot running at all — so just skip it here.
+        log.warning("DEV_MODE is on and AI_ENGINE_BOT_TOKEN is set — skipping bot polling to avoid clashing with the production bot's getUpdates (same token, no separate test bot). Mini App testing works via ?telegram_id= without this.")
+    elif ai_engine_token:
         from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault, MenuButtonWebApp, WebAppInfo
         from .ai_engine_bot import build_bot, build_dispatcher
 
@@ -243,18 +258,10 @@ def get_my_cabinets(x_telegram_init_data: Optional[str] = Header(default=None), 
     return {"cabinets": cabinets.list_cabinets(user_id)}
 
 
-@app.get("/api/cabinets/{cabinet_id}/margin")
-def get_cabinet_margin(
-    cabinet_id: int,
-    x_telegram_init_data: Optional[str] = Header(default=None),
-    telegram_id: Optional[int] = None,
-    days: int = 30,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-):
-    days = max(7, min(days, 180))
-    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
-    cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
+def _cabinet_margin_summary(cabinet: dict, days: int, date_from: Optional[str], date_to: Optional[str]) -> dict:
+    """Shared by get_cabinet_margin (single cabinet) and get_combined_report
+    (sums several) — same client/cache/error-handling path either way."""
+    cabinet_id = cabinet["id"]
     # A live (cache-miss) fetch here happens inside an HTTP request a tab is
     # waiting on — the platform's own reverse-proxy timeout kills it well
     # before OzonClient's full patient 8-retry schedule (up to ~165s on one
@@ -294,6 +301,89 @@ def get_cabinet_margin(
     except Exception as e:
         log.exception(f"Failed to build margin for cabinet {cabinet_id}")
         raise HTTPException(status_code=502, detail=f"upstream marketplace API error: {e}")
+
+
+@app.get("/api/cabinets/{cabinet_id}/margin")
+def get_cabinet_margin(
+    cabinet_id: int,
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+    days: int = 30,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    days = max(7, min(days, 180))
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    cabinet = _owned_cabinet_or_404(cabinet_id, user_id)
+    return _cabinet_margin_summary(cabinet, days, date_from, date_to)
+
+
+@app.get("/api/me/combined-report")
+def get_combined_report(
+    x_telegram_init_data: Optional[str] = Header(default=None),
+    telegram_id: Optional[int] = None,
+    cabinet_ids: Optional[str] = None,
+    days: int = 30,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+):
+    """Sums per-cabinet P&L across whichever of the user's OWN cabinets they
+    pick — deliberately NOT "all cabinets under this user_id" by default,
+    because a user can own more than one WB/Ozon cabinet (e.g. two legal
+    entities) and silently summing all of them would merge unrelated
+    businesses into one number. `cabinet_ids` (comma-separated) is required;
+    the frontend is expected to always pass the ones the user checked off a
+    cabinet list (see /api/me/cabinets)."""
+    days = max(7, min(days, 180))
+    user_id = _resolve_user_id(x_telegram_init_data, telegram_id)
+    if not cabinet_ids:
+        raise HTTPException(status_code=400, detail="cabinet_ids is required (comma-separated cabinet ids)")
+    try:
+        ids = [int(x) for x in cabinet_ids.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="cabinet_ids must be comma-separated integers")
+    if not ids:
+        raise HTTPException(status_code=400, detail="cabinet_ids is empty")
+
+    per_cabinet = []
+    for cid in ids:
+        cabinet = _owned_cabinet_or_404(cid, user_id)
+        summary = _cabinet_margin_summary(cabinet, days, date_from, date_to)
+        per_cabinet.append({
+            "cabinet_id": cid,
+            "marketplace": cabinet["marketplace"],
+            "display_name": cabinet["display_name"],
+            "period_from": summary["period_from"],
+            "period_to": summary["period_to"],
+            "account": summary["account"],
+        })
+
+    # WB's account dict has no "tax" key, Ozon's has no "ad_spend" key (Ozon ad
+    # spend isn't modeled in ozon_margin.py at all yet) — .get(field, 0) just
+    # treats the missing side as 0, so combined tax/ad_spend under-report
+    # when the selection mixes marketplaces. revenue/profit/cogs_total are
+    # present on both and sum correctly.
+    def _sum(field):
+        return round(sum(p["account"].get(field, 0) or 0 for p in per_cabinet), 2)
+
+    total_revenue = _sum("revenue")
+    total_profit = _sum("profit")
+    total_cogs = _sum("cogs_total")
+    total_tax = _sum("tax")
+    total_ad_spend = _sum("ad_spend")
+    return {
+        "period_from": per_cabinet[0]["period_from"],
+        "period_to": per_cabinet[0]["period_to"],
+        "cabinets": per_cabinet,
+        "account": {
+            "revenue": total_revenue,
+            "profit": total_profit,
+            "cogs_total": total_cogs,
+            "tax": total_tax,
+            "ad_spend": total_ad_spend,
+            "margin_percent": round(total_profit / total_revenue * 100, 2) if total_revenue else 0.0,
+        },
+    }
 
 
 @app.get("/api/cabinets/{cabinet_id}/cost-prices")
@@ -678,5 +768,11 @@ class NoCacheHtmlStaticFiles(StaticFiles):
             response.headers["Cache-Control"] = "no-cache"
         return response
 
+
+
+# Must be registered BEFORE the catch-all "/" mount below — Starlette matches
+# mounts in registration order, so a /seldereeva mount added after "/" would
+# never be reached (the catch-all would claim it first).
+app.mount("/seldereeva", NoCacheHtmlStaticFiles(directory=SELDEREEVA_FRONTEND_DIR, html=True), name="seldereeva_frontend")
 
 app.mount("/", NoCacheHtmlStaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
